@@ -12,6 +12,7 @@
 pub mod billing;
 pub mod engine;
 pub mod milp;
+pub mod negotiation;
 pub mod output;
 pub mod policy;
 pub mod scenario;
