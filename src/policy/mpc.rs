@@ -42,11 +42,20 @@ impl Default for MpcConfig {
 pub struct Mpc {
     backend: Box<dyn MilpBackend>,
     config: MpcConfig,
+    /// Planned peak net load (max aggregate variable) per solve, in solve
+    /// order. Drift canary material: under perfect foresight (no arrivals
+    /// after the first solve) this sequence must never increase, or the
+    /// controller is losing information between re-solves.
+    pub planned_peaks: std::cell::RefCell<Vec<f64>>,
 }
 
 impl Mpc {
     pub fn new(backend: Box<dyn MilpBackend>, config: MpcConfig) -> Self {
-        Mpc { backend, config }
+        Mpc {
+            backend,
+            config,
+            planned_peaks: std::cell::RefCell::new(Vec::new()),
+        }
     }
 }
 
@@ -226,6 +235,12 @@ impl Policy for Mpc {
             Ok(s) if s.status == SolStatus::Optimal => s,
             _ => return Vec::new(), // engine-safe fallback: do nothing this slot
         };
+
+        let planned_peak = agg
+            .iter()
+            .map(|a| solution.values[a.0])
+            .fold(0.0f64, f64::max);
+        self.planned_peaks.borrow_mut().push(planned_peak);
 
         sessions
             .iter()

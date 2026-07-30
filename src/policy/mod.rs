@@ -2,6 +2,7 @@
 
 mod heuristics;
 pub mod mpc;
+pub mod oracle;
 
 pub use heuristics::{EarliestDeadlineFirst, LeastLaxityFirst, Uncontrolled};
 
