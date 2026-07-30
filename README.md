@@ -12,7 +12,8 @@ time slot. The simulator tracks energy flows, enforces physical limits, and prod
 ## Why another EV charging simulator?
 
 [ACN-Sim](https://github.com/zach401/acnportal) (BSD-3-Clause, Caltech) is the reference open-source
-simulator for *unidirectional* (V1G) smart charging. `openv2b` focuses on what ACN-Sim does not model:
+simulator for *unidirectional* (V1G) smart charging [Lee et al., 2021]. `openv2b` focuses on what
+ACN-Sim does not model:
 
 - **Bidirectional power (V2B/V2G)**: vehicles can discharge into the building to shave peaks and serve
   demand-response commitments.
@@ -22,6 +23,23 @@ simulator for *unidirectional* (V1G) smart charging. `openv2b` focuses on what A
   windows and are penalized/credited against their commitment.
 - **Session persistence**: the same vehicle identity can appear across days, carrying its battery state
   between sessions.
+
+### Relationship to ACN-Sim: complement, cross-validated
+
+`openv2b` is deliberately **not** built on ACN-Sim, for three reasons. First, scope: ACN-Sim models
+EV-only aggregate current with no building load, no DR settlement, and no cross-day battery state;
+V2B economics live exactly in those couplings. Second, throughput: a 30-day, 2880-slot episode runs
+in ~3 ms under openv2b's heuristics and ~1.7 s under its per-slot MPC, which makes month-scale
+optimization studies and large sweeps practical. Third, and most importantly, independence is the
+verification strategy: because the two simulators share no code, agreement between them is evidence
+of correctness rather than of a shared bug. A companion plugin (`acnportal-v2b`) extends unmodified
+acnportal 0.3.3 with bidirectional EVSEs and replays openv2b scenarios through it; on every scenario
+expressible in both tools (charge-only and V2B, contention, force-charge, heterogeneous ports,
+asymmetric efficiencies), per-slot power and per-session energies agree to **max |delta| = 0.0**.
+
+> Z. J. Lee, S. Sharma, D. Johansson, S. H. Low. "ACN-Sim: An Open-Source Simulator for Data-Driven
+> Electric Vehicle Charging Research." *IEEE Transactions on Smart Grid* 12(6), 2021.
+> arXiv:2012.02809.
 
 ## Status
 

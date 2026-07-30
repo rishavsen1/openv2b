@@ -54,11 +54,43 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let scenario = match Scenario::load(&args.scenario) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("failed to load scenario: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // The CPLEX CLI backend is dependency-free and available in every build;
+    // the binary path comes from OPENV2B_CPLEX_BIN.
+    let cplex_backend = || -> Box<dyn openv2b::milp::MilpBackend> {
+        let bin = std::env::var("OPENV2B_CPLEX_BIN")
+            .unwrap_or_else(|_| "/home/rishav/ibm/cplex/bin/x86-64_linux/cplex".into());
+        Box::new(openv2b::milp::cli::LpCliBackend::cplex(
+            bin,
+            std::env::temp_dir().join("openv2b_cplex_cli"),
+        ))
+    };
+    let oracle_policy =
+        |backend: &dyn openv2b::milp::MilpBackend| -> Option<Box<dyn policy::Policy>> {
+            match policy::oracle::solve_oracle(
+                &scenario,
+                backend,
+                &policy::oracle::OracleConfig::default(),
+            ) {
+                Ok(plan) => Some(Box::new(policy::oracle::OracleReplay { plan })),
+                Err(e) => {
+                    eprintln!("oracle solve failed: {e}");
+                    None
+                }
+            }
+        };
+
     let pol: Box<dyn policy::Policy> = match args.policy.as_str() {
         // MPC over the in-process HiGHS backend (build with
-        // `--features solver-highs`). For other solvers (CPLEX, Xpress...)
-        // construct `milp::cli::LpCliBackend` programmatically; see
-        // docs/SOLVER_DESIGN.md.
+        // `--features solver-highs`); `mpc-cplex` / `oracle-cplex` drive the
+        // CPLEX CLI through the LP-file backend and work in every build.
         #[cfg(feature = "solver-highs")]
         "mpc" => Box::new(policy::mpc::Mpc::new(
             Box::new(openv2b::milp::highs_backend::HighsBackend),
@@ -69,6 +101,24 @@ fn main() -> ExitCode {
             eprintln!("policy 'mpc' requires building with --features solver-highs");
             return ExitCode::FAILURE;
         }
+        "mpc-cplex" => Box::new(policy::mpc::Mpc::new(
+            cplex_backend(),
+            policy::mpc::MpcConfig::default(),
+        )),
+        #[cfg(feature = "solver-highs")]
+        "oracle" => match oracle_policy(&openv2b::milp::highs_backend::HighsBackend) {
+            Some(p) => p,
+            None => return ExitCode::FAILURE,
+        },
+        #[cfg(not(feature = "solver-highs"))]
+        "oracle" => {
+            eprintln!("policy 'oracle' requires building with --features solver-highs");
+            return ExitCode::FAILURE;
+        }
+        "oracle-cplex" => match oracle_policy(cplex_backend().as_ref()) {
+            Some(p) => p,
+            None => return ExitCode::FAILURE,
+        },
         name => match policy::by_name(name) {
             Some(p) => p,
             None => {
@@ -76,13 +126,6 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         },
-    };
-    let scenario = match Scenario::load(&args.scenario) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("failed to load scenario: {e}");
-            return ExitCode::FAILURE;
-        }
     };
 
     let results = engine::run(&scenario, pol.as_ref());
