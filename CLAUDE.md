@@ -89,6 +89,32 @@ in-loop (non-pre-pass) negotiation.
   parity needs its `SeriesTariff` + `v2b_analysis` components; scenarios with queueing
   (`never_connected`) are refused by its bridge by design.
 
+## Clarified gaps vs OPTIMUS (2026-07-30 review with Rishav)
+
+Missing elements, all additive at existing seams, none architectural:
+- **OPTIMUS-format converter** (episodes -> scenario dirs): timestamps -> slot indices from the
+  midnight origin, SoC percent x capacity/100 -> kWh, cars.csv + sessions.csv merge -> one
+  vehicles.csv row per session, `charge_rates_kw` tuple -> max_kw + bidirectional, per-building
+  split -> one scenario per building. ~100 lines, not written yet.
+- **Multi-building** + a policies.csv equivalent (one scenario = one building today).
+- **Ramp constraint** (`q_delta`) absent from both LPs.
+- **Strict mode**: engine clamps infeasible actions by design; OPTIMUS raises. A
+  raise-on-clamp flag would be a small addition if byte-faithful error behavior is wanted.
+- **Settlement ledgers** (banked-energy revenue, replay credits), per-user-type inconvenience
+  tables, CVaR scenario solves, RL policies, historical-threshold/LSTM budget variants.
+- **Config surface**: scenario.json is the base.ini analog for environment/tariff; policy is
+  chosen on the CLI; MpcConfig/OracleConfig/NegotiationConfig constants (lookahead, shortfall
+  M, degradation, tiers, surplus share, temperature, seed) are exposed as Rust structs with
+  defaults but NOT yet settable from a config file. TODO: a `[policy]`/`[negotiation]` section
+  in scenario.json (or a run.toml) so full runs are reproducible from inputs alone.
+- Hardcoded engine constants worth knowing: 1e-9 target-met tolerance, 1e-9 honored-window
+  gate (both documented in SPEC and pinned by tests).
+
+Measured runtime reference (this machine, month-scale, 30 days x 96 slots): openv2b heuristic
+(llf / llf-v2b) ~3.4 ms per full run including CSV I/O; MPC (2880 in-process HiGHS re-solves)
+~1.7 s. OPTIMUS non-ILP month episodes recorded 18-41 s in their own metrics.json (~5 ms per
+event), i.e. openv2b heuristics are ~4 orders of magnitude faster.
+
 ## Cross-validation status (ACN-Sim plugin)
 
 `~/acnportal-v2b` (56 pytest tests, pinned acnportal==0.3.3 / numpy 1.26 / pandas 1.5.3 /
