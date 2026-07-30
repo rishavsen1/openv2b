@@ -1,0 +1,33 @@
+[package]
+name = "openv2b"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+description = "A lightweight, open-source discrete-event simulator for EV vehicle-to-building (V2B) charging and scheduling research"
+repository = "https://github.com/rishavsen1/openv2b"
+keywords = ["ev", "v2b", "v2g", "simulation", "smart-charging"]
+categories = ["simulation", "science"]
+readme = "README.md"
+default-run = "openv2b"
+
+[dependencies]
+csv = "1.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+highs = { version = "1", optional = true }
+
+[features]
+# In-process HiGHS backend for optimization policies (MPC). The default build
+# stays solver-free; the LP-file + CLI backend works without any feature.
+solver-highs = ["dep:highs"]
+
+[dev-dependencies]
+approx = "0.5"
+
+[[bin]]
+name = "openv2b"
+path = "src/main.rs"
+
+[profile.release]
+lto = true

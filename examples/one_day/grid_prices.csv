@@ -1,0 +1,5 @@
+slot,value,tou
+0,0.10,super-off-peak
+24,0.20,off-peak
+48,0.35,peak
+84,0.20,off-peak

@@ -1,0 +1,50 @@
+<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>Month verification results</title><style>
+:root { color-scheme: light dark; }
+body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; line-height: 1.55;
+       max-width: 60rem; margin: 2rem auto; padding: 0 1rem; }
+@media (prefers-color-scheme: dark) { body { background: #111; color: #ddd; }
+  a { color: #7ab7ff; } th { background: #222; } tr:nth-child(even) { background: #1a1a1a; }
+  code, pre { background: #222; } }
+h1, h2, h3 { line-height: 1.25; }
+h1 { border-bottom: 2px solid #888; padding-bottom: .3rem; }
+h2 { border-bottom: 1px solid #8884; padding-bottom: .2rem; margin-top: 2rem; }
+table { border-collapse: collapse; margin: 1rem 0; display: block; overflow-x: auto; }
+th, td { border: 1px solid #8886; padding: .35rem .6rem; text-align: left; }
+th { background: #eee; }
+tr:nth-child(even) { background: #8881; }
+code { background: #8882; padding: .1rem .3rem; border-radius: 3px; font-size: .92em; }
+pre { background: #8882; padding: .8rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+blockquote { border-left: 4px solid #888; margin-left: 0; padding-left: 1rem; color: #888; }
+.ok { color: #2a2; font-weight: 600; } .fail { color: #c33; font-weight: 600; }
+</style></head><body><h1>Month verification results</h1>
+<h2>one_month</h2>
+<table><thead><tr><th>policy</th><th>total $</th><th>energy $</th><th>demand $</th><th>DR penalty $</th><th>DR incentive $</th><th>peak kW</th><th>mean net in DR kW</th><th>peak red. vs unc. kW</th><th>targets met</th><th>unserved</th><th>missing kWh</th><th>banked kWh</th><th>clamped kWh</th><th>determinism</th><th>referee</th></tr></thead><tbody>
+<tr><td>idle</td><td>7532.20</td><td>5125.50</td><td>700.20</td><td>1774.50</td><td>68.00</td><td>60.0</td><td>56.34</td><td>25.0</td><td>11/183</td><td>1</td><td>5831.00</td><td>275.00</td><td>2210.00</td><td>ok</td><td>PASS</td></tr>
+<tr><td>uncontrolled</td><td>9525.65</td><td>5621.20</td><td>991.95</td><td>2980.50</td><td>68.00</td><td>85.0</td><td>64.99</td><td>0.0</td><td>182/183</td><td>1</td><td>20.00</td><td>275.00</td><td>0.00</td><td>ok</td><td>PASS</td></tr>
+<tr><td>edf</td><td>8318.84</td><td>5620.39</td><td>991.95</td><td>1774.50</td><td>68.00</td><td>85.0</td><td>56.34</td><td>0.0</td><td>182/183</td><td>1</td><td>20.00</td><td>275.00</td><td>0.00</td><td>ok</td><td>PASS</td></tr>
+<tr><td>edf-v2b</td><td>4318.88</td><td>5491.43</td><td>991.95</td><td>79.50</td><td>2244.00</td><td>96.0</td><td>44.19</td><td>-11.0</td><td>182/183</td><td>1</td><td>20.00</td><td>3487.50</td><td>0.00</td><td>ok</td><td>PASS</td></tr>
+<tr><td>llf</td><td>8318.84</td><td>5620.39</td><td>991.95</td><td>1774.50</td><td>68.00</td><td>85.0</td><td>56.34</td><td>0.0</td><td>182/183</td><td>1</td><td>20.00</td><td>275.00</td><td>0.00</td><td>ok</td><td>PASS</td></tr>
+<tr><td>llf-v2b</td><td>4318.88</td><td>5491.43</td><td>991.95</td><td>79.50</td><td>2244.00</td><td>96.0</td><td>44.19</td><td>-11.0</td><td>182/183</td><td>1</td><td>20.00</td><td>3487.50</td><td>0.00</td><td>ok</td><td>PASS</td></tr>
+</tbody></table>
+<p>M30 building-load relaxation in DR windows vs idle (56.34 kW baseline): uncontrolled +8.65 kW, edf +0.00 kW, edf-v2b -12.15 kW, llf +0.00 kW, llf-v2b -12.15 kW</p>
+<h2>one_month_lossy</h2>
+<table><thead><tr><th>policy</th><th>total $</th><th>energy $</th><th>demand $</th><th>DR penalty $</th><th>DR incentive $</th><th>peak kW</th><th>mean net in DR kW</th><th>peak red. vs unc. kW</th><th>targets met</th><th>unserved</th><th>missing kWh</th><th>banked kWh</th><th>clamped kWh</th><th>determinism</th><th>referee</th></tr></thead><tbody>
+<tr><td>idle</td><td>7532.20</td><td>5125.50</td><td>700.20</td><td>1774.50</td><td>68.00</td><td>60.0</td><td>56.34</td><td>15.0</td><td>11/183</td><td>1</td><td>5831.00</td><td>275.00</td><td>2210.00</td><td>ok</td><td>PASS</td></tr>
+<tr><td>uncontrolled</td><td>9459.82</td><td>5664.30</td><td>875.25</td><td>2988.26</td><td>68.00</td><td>75.0</td><td>65.04</td><td>0.0</td><td>182/183</td><td>1</td><td>20.00</td><td>275.00</td><td>0.00</td><td>ok</td><td>PASS</td></tr>
+<tr><td>edf</td><td>8243.60</td><td>5661.85</td><td>875.25</td><td>1774.50</td><td>68.00</td><td>75.0</td><td>56.34</td><td>0.0</td><td>182/183</td><td>1</td><td>20.00</td><td>275.00</td><td>0.00</td><td>ok</td><td>PASS</td></tr>
+<tr><td>edf-v2b</td><td>4244.36</td><td>5533.61</td><td>875.25</td><td>79.50</td><td>2244.00</td><td>75.0</td><td>44.19</td><td>0.0</td><td>182/183</td><td>1</td><td>20.00</td><td>3469.47</td><td>0.00</td><td>ok</td><td>PASS</td></tr>
+<tr><td>llf</td><td>8243.60</td><td>5661.85</td><td>875.25</td><td>1774.50</td><td>68.00</td><td>75.0</td><td>56.34</td><td>0.0</td><td>182/183</td><td>1</td><td>20.00</td><td>275.00</td><td>0.00</td><td>ok</td><td>PASS</td></tr>
+<tr><td>llf-v2b</td><td>4244.36</td><td>5533.61</td><td>875.25</td><td>79.50</td><td>2244.00</td><td>75.0</td><td>44.19</td><td>0.0</td><td>182/183</td><td>1</td><td>20.00</td><td>3469.47</td><td>0.00</td><td>ok</td><td>PASS</td></tr>
+</tbody></table>
+<p>M30 building-load relaxation in DR windows vs idle (56.34 kW baseline): uncontrolled +8.70 kW, edf +0.00 kW, edf-v2b -12.15 kW, llf +0.00 kW, llf-v2b -12.15 kW</p>
+<h2>one_month_nopersist</h2>
+<table><thead><tr><th>policy</th><th>total $</th><th>energy $</th><th>demand $</th><th>DR penalty $</th><th>DR incentive $</th><th>peak kW</th><th>mean net in DR kW</th><th>peak red. vs unc. kW</th><th>targets met</th><th>unserved</th><th>missing kWh</th><th>banked kWh</th><th>clamped kWh</th><th>determinism</th><th>referee</th></tr></thead><tbody>
+<tr><td>idle</td><td>7532.20</td><td>5125.50</td><td>700.20</td><td>1774.50</td><td>68.00</td><td>60.0</td><td>56.34</td><td>25.0</td><td>30/183</td><td>1</td><td>3720.00</td><td>1500.00</td><td>0.00</td><td>ok</td><td>PASS</td></tr>
+<tr><td>uncontrolled</td><td>10464.85</td><td>5904.90</td><td>991.95</td><td>3636.00</td><td>68.00</td><td>85.0</td><td>69.69</td><td>0.0</td><td>182/183</td><td>1</td><td>20.00</td><td>1500.00</td><td>0.00</td><td>ok</td><td>PASS</td></tr>
+<tr><td>edf</td><td>8613.57</td><td>5897.12</td><td>991.95</td><td>1792.50</td><td>68.00</td><td>85.0</td><td>56.47</td><td>0.0</td><td>182/183</td><td>1</td><td>20.00</td><td>1500.00</td><td>0.00</td><td>ok</td><td>PASS</td></tr>
+<tr><td>edf-v2b</td><td>4963.22</td><td>6117.77</td><td>991.95</td><td>97.50</td><td>2244.00</td><td>96.0</td><td>44.32</td><td>-11.0</td><td>182/183</td><td>1</td><td>20.00</td><td>3426.50</td><td>0.00</td><td>ok</td><td>PASS</td></tr>
+<tr><td>llf</td><td>8613.57</td><td>5897.12</td><td>991.95</td><td>1792.50</td><td>68.00</td><td>85.0</td><td>56.47</td><td>0.0</td><td>182/183</td><td>1</td><td>20.00</td><td>1500.00</td><td>0.00</td><td>ok</td><td>PASS</td></tr>
+<tr><td>llf-v2b</td><td>4963.22</td><td>6117.77</td><td>991.95</td><td>97.50</td><td>2244.00</td><td>96.0</td><td>44.32</td><td>-11.0</td><td>182/183</td><td>1</td><td>20.00</td><td>3426.50</td><td>0.00</td><td>ok</td><td>PASS</td></tr>
+</tbody></table>
+<p>M30 building-load relaxation in DR windows vs idle (56.34 kW baseline): uncontrolled +13.34 kW, edf +0.13 kW, edf-v2b -12.02 kW, llf +0.13 kW, llf-v2b -12.02 kW</p></body></html>

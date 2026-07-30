@@ -1,0 +1,8 @@
+{
+  "slot_minutes": 15.0,
+  "horizon_slots": 96,
+  "charge_efficiency": 0.95,
+  "discharge_efficiency": 0.95,
+  "demand_charge_usd_per_kw": 11.67,
+  "dr_events_file": "dr_events.csv"
+}

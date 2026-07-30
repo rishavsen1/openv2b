@@ -1,0 +1,4 @@
+vehicle_id,arrival_slot,departure_slot,battery_kwh,soc_arrival_kwh,soc_target_kwh,max_charge_kw,max_discharge_kw,min_soc_kwh
+0,32,68,60.0,15.0,48.0,11.0,11.0,6.0
+1,36,72,80.0,60.0,40.0,19.0,19.0,8.0
+2,40,64,40.0,10.0,32.0,7.0,0.0,4.0

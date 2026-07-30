@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Build
+        run: cargo build --all-targets
+      - name: Test
+        run: cargo test
+      # The independent Python referee is the project's differential oracle:
+      # it re-simulates reference policies from scratch and re-derives every
+      # billing/physics metric from the raw outputs. It must run in CI, not
+      # only when someone remembers to invoke it.
+      - name: Referee (one_day, edf-v2b)
+        run: |
+          cargo build --release
+          ./target/release/openv2b --scenario examples/one_day --policy edf-v2b --out /tmp/ref_day
+          python3 tools/referee.py examples/one_day /tmp/ref_day
+      - name: Referee (one_month, uncontrolled resim + lossy edf-v2b)
+        run: |
+          cargo run --release --bin gen_month
+          ./target/release/openv2b --scenario examples/one_month --policy uncontrolled --out /tmp/ref_month
+          python3 tools/referee.py examples/one_month /tmp/ref_month
+          ./target/release/openv2b --scenario examples/one_month_lossy --policy edf-v2b --out /tmp/ref_lossy
+          python3 tools/referee.py examples/one_month_lossy /tmp/ref_lossy
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.75"
+      - run: cargo check
