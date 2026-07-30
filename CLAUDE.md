@@ -83,11 +83,22 @@ in-loop (non-pre-pass) negotiation.
 
 ## Active work (update me)
 
-- ACN-Sim cross-validation plugin: SEPARATE repo (`~/acnportal-v2b`), plan in
-  `docs/ACNSIM_V2B_PLAN.md`. openv2b stays standalone; the plugin exists only for
-  cross-validation. X1/X2 parity experiments in progress.
 - Negotiation v2 candidates: in-loop arrival hook (replace the pre-pass), settlement ledger
   outputs, menu pricing that sees concurrent EV load.
+- ACN-Sim plugin follow-ups (in `~/acnportal-v2b`, separate repo, unpushed): X5 billing
+  parity needs its `SeriesTariff` + `v2b_analysis` components; scenarios with queueing
+  (`never_connected`) are refused by its bridge by design.
+
+## Cross-validation status (ACN-Sim plugin)
+
+`~/acnportal-v2b` (56 pytest tests, pinned acnportal==0.3.3 / numpy 1.26 / pandas 1.5.3 /
+setuptools 80 on CPython 3.10; setuptools >= 81 breaks acnportal's pkg_resources import):
+X1-X4 cross-validation vs the openv2b release binary all close at max |delta| = 0.0e0
+(uncontrolled, EDF, LLF, and both V2B variants; charge, discharge, force-charge, capability-
+aware assignment on heterogeneous ports, (start,end] window coverage, asymmetric
+efficiencies). Non-vacuity was verified by mutation (removing the clamp-order shim diverges
+X2 by 22 kWh). Deviations from docs/ACNSIM_V2B_PLAN.md are recorded in that repo's README;
+open items: X5 billing parity, queueing scenarios refused by the bridge.
 
 ## Semantics notes for the new modules
 
