@@ -24,11 +24,15 @@
 - [x] Solver-agnostic `MilpBackend` layer: in-process HiGHS (`solver-highs` feature) +
       universal LP-file/CLI backend (CPLEX-verified); see `docs/SOLVER_DESIGN.md`
 - [x] Receding-horizon MPC policy (pure LP, honest information set, engine-clamped)
+- [x] Full-horizon oracle (persistence-coupled) + MPC-vs-oracle parity suites (deficit AND
+      surplus regimes, staggered departures, upward-peak drift canary)
+- [x] FSL commitment optimization (firm level as a decision variable vs a computed no-DR
+      baseline, honored-gate post-adjustment; `plan_fsl` binary)
+- [x] Negotiation layer v1: arrival-time offer menus priced by marginal-cost solves, seeded
+      softmax choice model, reject option, contract write-back (`negotiate` binary). v2:
+      in-loop hook, settlement ledger, congestion-aware pricing
 - [ ] In-process Gurobi backend (`grb` crate) with warm starts
-- [ ] FSL commitment optimization (firm level as a decision variable vs a no-DR baseline)
-- [ ] MPC-vs-oracle parity suites (deficit AND surplus regimes, staggered departures, drift canary)
 - [ ] Risk-aware variants (scenario sampling, CVaR objective)
-- [ ] Negotiation layer: arrival-time offer menus, user choice models, contract billing
 
 ## Non-goals
 - Dashboards / GUI visualization (results are plain CSV/JSON; plot them with anything)

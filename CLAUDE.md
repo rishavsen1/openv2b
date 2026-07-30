@@ -69,21 +69,40 @@ python3 tools/md2html.py reports/OVERNIGHT_REPORT.md      # report HTML (never h
 
 ## Current state (update me)
 
-v0.3-alpha, 2026-07-30. 58 tests green, clippy/fmt clean both feature sets, CI includes the
-referee. Month campaign: 19 runs (incl. MPC) all referee-verified + deterministic. MPC solves a
-2880-slot month in ~1.7 s (HiGHS in-process); LP-CLI backend verified bill-identical vs CPLEX
-22.1 (/home/rishav/ibm/cplex). Known gaps: Gurobi backend (needs license), tariff ratchets,
-multi-building, ACN-Data importer.
+v0.3-alpha, 2026-07-30 (second session). 72 tests green under `--features solver-highs` (54
+solver-free), clippy/fmt clean both feature sets, CI includes the referee. Month campaign: 19
+runs (incl. MPC) all referee-verified + deterministic. MPC solves a 2880-slot month in ~1.7 s
+(HiGHS in-process); LP-CLI backend verified bill-identical vs CPLEX 22.1
+(/home/rishav/ibm/cplex). Landed since the overnight report: full-horizon oracle
+(`policy::oracle`, persistence-coupled, replayable), MPC-vs-oracle parity suites for BOTH
+regimes + the upward-peak drift canary (`tests/parity.rs`), FSL commitment optimization with
+honored-gate post-adjustment (`plan_fsl` binary, `tests/fsl.rs`), negotiation layer v1
+(`src/negotiation.rs`, `negotiate` binary, `tests/negotiation.rs`). Known gaps: Gurobi backend
+(needs license), tariff ratchets/minimum-demand clauses, multi-building, ACN-Data importer,
+in-loop (non-pre-pass) negotiation.
 
 ## Active work (update me)
 
-- MPC-vs-oracle parity suites: deficit AND surplus regimes, staggered departures, drift canary
-  (planned peak must never jump upward under perfect foresight).
-- FSL commitment optimization (firm level as decision variable vs counterfactual baseline).
-- Negotiation layer v1 (arrival-time offer menus, seeded choice model, contract settlement).
 - ACN-Sim cross-validation plugin: SEPARATE repo (`~/acnportal-v2b`), plan in
   `docs/ACNSIM_V2B_PLAN.md`. openv2b stays standalone; the plugin exists only for
-  cross-validation.
+  cross-validation. X1/X2 parity experiments in progress.
+- Negotiation v2 candidates: in-loop arrival hook (replace the pre-pass), settlement ledger
+  outputs, menu pricing that sees concurrent EV load.
+
+## Semantics notes for the new modules
+
+- `policy::oracle`: full-horizon LP with perfect foresight; persistence chains are COUPLED
+  (session k+1's opening SoC is the previous terminal variable minus depletion), which is what
+  lets it bank across days. Scope checks reject charger contention and heterogeneous port
+  limits rather than silently mismodeling them. The oracle's bill is NOT a lower bound over
+  bills (unbilled degradation term); compare with `deg_slack`, see `tests/parity.rs`.
+- FSL optimization is two solves (counterfactual no-DR baseline, then commitment with F as a
+  variable in [0, baseline]) plus a gated post-adjustment, because billing pays the incentive
+  all-or-nothing while the LP prices it linearly (short windows would overcommit otherwise).
+- Negotiation v1 is a PRE-PASS in arrival order, priced by single-session oracle solves;
+  approximations are documented at the top of `src/negotiation.rs`. Delays are capped at the
+  vehicle's next arrival so chains never overlap; the reject option keeps original terms and
+  is exempt from the inconvenience penalty; choice is seeded softmax (temperature 0 = argmax).
 
 ## History
 
@@ -93,3 +112,6 @@ multi-building, ACN-Data importer.
   (emission-order arbitration critical, NaN validation, force-charge, banking; mutation kill
   rate to 100% of the committed list), solver layer (HiGHS + LP-CLI/CPLEX) + MPC. Report:
   `reports/OVERNIGHT_REPORT.md`.
+- 2026-07-30 (session 2): published to github.com/rishavsen1/openv2b; oracle + parity suites +
+  drift canary; FSL commitment planner; negotiation layer v1; ACN-Sim plugin started in its
+  own repo.
