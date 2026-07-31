@@ -142,10 +142,11 @@ fn main() -> ExitCode {
                     }
                 }
             }
-            let mut cfg = policy::scenario_mpc::ScenarioMpcConfig::new(futures);
-            // Reference behavior: chained sampled sessions take their
-            // between-visit consumption from the test episode.
-            cfg.test_sessions = scenario.vehicles.clone();
+            // NOTE: `cfg.test_sessions` is deliberately left EMPTY. Filling
+            // it reproduces the reference simulator's leak of the test
+            // episode's between-visit consumption into the plan; openv2b
+            // never plans on unknowable future state.
+            let cfg = policy::scenario_mpc::ScenarioMpcConfig::new(futures);
             let backend: Box<dyn openv2b::milp::MilpBackend> = if name.ends_with("cplex") {
                 cplex_backend()
             } else {

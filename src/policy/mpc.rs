@@ -1,9 +1,12 @@
 //! Receding-horizon MPC policy over the solver-agnostic MILP layer.
 //!
-//! Honest information set: the model sees only currently-connected sessions
-//! plus the public series (prices, building load, TOU classes, DR windows,
-//! site cap). No knowledge of future arrivals. The engine still clamps every
-//! setpoint, so a wrong solve can cost money but never break physics.
+//! Honest information set, enforced: currently-connected sessions, the
+//! published tariff schedule (TOU prices are contractual and known ahead),
+//! the DR program's announced windows, the site cap, and a PAST-ONLY
+//! building forecast (`Observation::building_forecast_kw`, daily
+//! persistence). No future arrivals, and no reading of the realized building
+//! series beyond the current slot. The engine still clamps every setpoint,
+//! so a wrong solve can cost money but never break physics.
 //!
 //! The formulation is a pure LP (charge/discharge split into non-negative
 //! variables): per connected session v and slot s in its remaining window,
@@ -160,7 +163,7 @@ impl Policy for Mpc {
         let cap = obs.site_cap_kw;
         let mut agg: Vec<VarId> = Vec::with_capacity(n_slots);
         for s in now..horizon_end {
-            let building = obs.building_series[s];
+            let building = obs.building_forecast_kw(s);
             let ub = cap.map_or(f64::INFINITY, |c| c.max(building));
             let a = m.add_var(format!("agg_{s}"), 0.0, ub, 0.0);
             let mut terms = vec![(a, 1.0)];

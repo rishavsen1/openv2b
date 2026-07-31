@@ -64,6 +64,15 @@ python3 tools/md2html.py reports/OVERNIGHT_REPORT.md      # report HTML (never h
 
 ## Hard rules (each one exists because a review found the violation)
 
+0. NO PLANNER MAY READ FUTURE STATE. Policies may use: measured history, the current
+   observation, the published tariff schedule, announced DR windows, contracted session
+   terms of CONNECTED cars, and sampled/forecast futures. They may NOT index
+   `Observation::building_series` beyond `obs.slot` (use `building_forecast_kw`), may not see
+   the test episode's future sessions, and may not source a sampled session's depletion from
+   the realized episode (`ScenarioMpcConfig::test_sessions` exists only to reproduce the
+   reference's leak for comparison and must stay empty in normal runs). The `oracle` policy is
+   the sole, clearly-named exception: perfect foresight is its definition.
+
 1. The `(start, end]` DR window convention appears in 4 places (scenario.rs, engine.rs,
    billing.rs, referee.py) and is anchored by the hand-written table in
    `tests/dr_window_table.rs`. Change all or none.

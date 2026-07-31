@@ -100,6 +100,35 @@ identities. Difference noted but benign on this data: the reference passes every
 LAST training episode's price/charger tables (a leaked loop variable), harmless because all
 RISHAV SEP2024 episodes share tariffs.
 
+## Correction: no planner may use future state (2026-07-31)
+
+An audit for future-state leakage found and removed two, and the numbers in the tables ABOVE
+that involve `mpc` are affected. Read them with this section.
+
+1. **The deterministic `mpc` policy was reading the realized building series for its whole
+   horizon**, i.e. perfect foresight of the load it was planning against. It now uses
+   `Observation::building_forecast_kw`: measured values up to the current slot, daily
+   persistence (same slot yesterday) beyond it. Cost of honesty on RISHAV_WEEK:
+   ep1 $3796.08 -> **$4362.71**, ep2 $3754.95 -> **$4268.59**, ep3 $3762.01 -> **$4070.72**,
+   entirely through the demand charge (peaks 140-142 kW -> 164-189 kW), because a
+   persistence forecast mis-predicts each day's peak. Any earlier claim that the deterministic
+   MPC "matched the reference's 5-scenario MPC" was an artifact of that foresight and is
+   withdrawn.
+2. **Chained sampled sessions were taking their between-visit consumption from the test
+   episode** (the reference's behavior, verified 10/10 against its dump). That is future state
+   about how far a car will actually be driven. `ScenarioMpcConfig::test_sessions` is now left
+   empty by the CLI: the capability remains only for reference-comparison runs.
+
+`scenario-mpc` never had the building leak (its future load is sampled from historical
+episodes) and now has no leak at all. Post-fix, with the reference's scenario order and no
+ramp: ep1 $3796.93, ep2 $3839.67, ep3 $4012.72, at 58-60 s. The reference's own MPC keeps the
+depletion leak, so the remaining comparison is no longer strictly like-for-like in openv2b's
+favour: we are now the stricter of the two.
+
+Prices, TOU classes, and DR windows are still read across the horizon in both simulators, and
+that is deliberate: a tariff schedule and an announced DR program are contractual information,
+not future state.
+
 ## Input-level diff at a single solve (the decisive experiment)
 
 Inferring from bills was replaced by instrumenting the reference: its MPC was made to dump

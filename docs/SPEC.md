@@ -187,6 +187,16 @@ physical ones over 200 seeded scenarios x all policies with coverage counters)
     surplus reducing the next session's grid draw one-for-one (lossless case), and
     `persistence: false` restoring independent sessions.
 
+### Information available to a planner
+
+A policy may use measured history and the current observation, the published tariff schedule
+(TOU prices are contractual), announced DR windows, the contracted departure and target of
+CONNECTED sessions, and forecasts or sampled scenarios of what is unknown. It may not use the
+realized future: `Observation::building_forecast_kw` is the sanctioned accessor for building
+load (measured up to now, daily persistence beyond), future sessions of the simulated episode
+are never visible, and a sampled session's between-visit consumption comes from the sampled
+episode. The `oracle` policy is the sole exception and is named accordingly.
+
 ## 8. Optimization-based policies (v0.3-alpha, implemented)
 
 A receding-horizon MPC (`policy::mpc`) over the solver-agnostic `milp` layer (see

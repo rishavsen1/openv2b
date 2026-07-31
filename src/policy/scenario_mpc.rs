@@ -47,9 +47,10 @@ pub struct ScenarioMpcConfig {
     /// lower bound that ratchets upward (its `p_max_hist`). Disable to let
     /// every solve price the full peak (diagnostic / non-reference mode).
     pub use_peak_history: bool,
-    /// Reference behavior: each scenario plans against ITS OWN episode's
-    /// building-load series (the load is forecast, not known). False plans
-    /// every scenario against the realized series (perfect foresight).
+    /// Each scenario plans against ITS OWN episode's building-load series
+    /// (the load is sampled, not known). False falls back to the past-only
+    /// daily-persistence forecast. Neither setting reads the realized future
+    /// series: no planner in this crate is given perfect building foresight.
     pub building_from_futures: bool,
     /// The test episode's session rows, used ONLY to source the
     /// between-visit consumption (`depletion_kwh`) of sampled future
@@ -358,13 +359,16 @@ impl Policy for ScenarioMpc {
                 // forecast; sampling it too was tested and diverges further
                 // from the reference's committed dispatch).
                 let building = if self.config.building_from_futures && s > now {
+                    // Sampled from this scenario's episode; if that episode
+                    // is shorter, fall back to the PAST-ONLY forecast (never
+                    // the realized future series).
                     self.config
                         .futures
                         .get(k)
                         .and_then(|f| f.building_load_kw.get(s).copied())
-                        .unwrap_or(obs.building_series[s])
+                        .unwrap_or_else(|| obs.building_forecast_kw(s))
                 } else {
-                    obs.building_series[s]
+                    obs.building_forecast_kw(s)
                 };
                 let ub = obs.site_cap_kw.map_or(f64::INFINITY, |c| c.max(building));
                 let a = m.add_var(format!("agg_k{k}_{s}"), 0.0, ub, 0.0);

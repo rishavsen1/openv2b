@@ -71,6 +71,30 @@ pub struct SessionView<'a> {
     pub max_discharge_kw: f64,
 }
 
+impl Observation<'_> {
+    /// Building load a PLANNER may assume for `slot`, using only information
+    /// available now. Past and current slots are the measured series; future
+    /// slots use daily persistence (same slot yesterday), falling back to the
+    /// last measured value when there is no yesterday yet.
+    ///
+    /// Planners must never index `building_series` beyond `self.slot`: that
+    /// series is the realized truth and reading it ahead is perfect
+    /// foresight. This helper is the sanctioned accessor.
+    pub fn building_forecast_kw(&self, slot: usize) -> f64 {
+        if slot <= self.slot {
+            return self.building_series[slot];
+        }
+        let per_day = (24.0 * 60.0 / self.slot_minutes).round() as usize;
+        if per_day > 0 && slot >= per_day {
+            let yesterday = slot - per_day;
+            if yesterday <= self.slot {
+                return self.building_series[yesterday];
+            }
+        }
+        self.building_series[self.slot]
+    }
+}
+
 impl SessionView<'_> {
     /// Energy still needed to reach the departure target, kWh (battery side).
     pub fn remaining_need_kwh(&self) -> f64 {
