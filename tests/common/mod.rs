@@ -25,6 +25,7 @@ pub fn vehicle(id: u32, arrival: usize, departure: usize) -> Vehicle {
         max_charge_kw: 20.0,
         max_discharge_kw: 20.0,
         min_soc_kwh: 0.0,
+        max_soc_kwh: None,
         depletion_kwh: 0.0,
     }
 }

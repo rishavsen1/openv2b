@@ -88,104 +88,6 @@ fn unvalidated_out_of_horizon_event_pays_no_incentive() {
     assert!(r.bill.total_usd > 0.0, "no free negative bill");
 }
 
-/// M10: the discharge reserve must respect the SoC floor, not just the
-/// target. Two donors with floor 45 > target 10 hold exactly 1 kWh of true
-/// surplus each; an 8 kW shortfall needs BOTH. If the reserve ignored the
-/// floor, the first-visited donor would claim the whole shortfall, get
-/// engine-clamped to its 1 kWh, and the slot would deliver only half the
-/// available relief.
-#[test]
-fn discharge_reserve_respects_floor_across_donors() {
-    let mk = |id: u32| {
-        let mut v = vehicle(id, 0, 12);
-        v.min_soc_kwh = 45.0;
-        v.soc_target_kwh = 10.0;
-        v.soc_arrival_kwh = 46.0;
-        v
-    };
-    let mut s = base_scenario(
-        16,
-        vec![mk(0), mk(1)],
-        vec![charger(0, true), charger(1, true)],
-    );
-    s.building_load_kw = vec![48.0; 16];
-    s.dr_events.push(dr_event(0, 8, 40.0)); // 8 kW shortfall, covers slots 1..=8
-    let r = run(&s, policy::by_name("edf-v2b").expect("registered").as_ref());
-    assert_abs_diff_eq!(r.slots[1].ev_discharge_kw, 8.0, epsilon = 1e-9);
-}
-
-/// M12: capability-aware assignment must work regardless of charger index
-/// order. Bidirectional port FIRST: lowest-free-index would hand it to the
-/// non-V2B early arriver and strand the donor.
-#[test]
-fn donor_gets_bidi_port_even_when_bidi_port_is_index_zero() {
-    let mut v0 = vehicle(0, 0, 8);
-    v0.max_discharge_kw = 0.0; // arrives first (lower id), cannot V2B
-    let mut v1 = vehicle(1, 0, 8);
-    v1.soc_arrival_kwh = 55.0;
-    v1.soc_target_kwh = 10.0;
-    let mut s = base_scenario(8, vec![v0, v1], vec![charger(0, true), charger(1, false)]);
-    s.building_load_kw = vec![50.0; 8];
-    s.dr_events.push(dr_event(0, 7, 40.0));
-    let r = run(&s, policy::by_name("edf-v2b").expect("registered").as_ref());
-    let donor = r
-        .sessions
-        .iter()
-        .find(|x| x.vehicle_id == 1)
-        .expect("donor session");
-    assert!(
-        donor.energy_exported_kwh > 0.0,
-        "donor stranded on the unidirectional port"
-    );
-}
-
-/// M13: charge-only priority policies must curtail charging to the firm
-/// level inside a DR window (this is the FSL headroom term, previously never
-/// exercised because DR-test vehicles arrived already at target).
-#[test]
-fn priority_policies_curtail_charging_to_firm_level() {
-    let build = || {
-        let mut v = vehicle(0, 0, 40);
-        v.battery_kwh = 80.0;
-        v.soc_arrival_kwh = 5.0;
-        v.soc_target_kwh = 65.0;
-        let mut s = base_scenario(48, vec![v], vec![charger(0, true)]);
-        s.building_load_kw = vec![30.0; 48];
-        s.dr_events.push(dr_event(0, 12, 40.0)); // 10 kW of in-window headroom
-        s
-    };
-    for name in ["edf", "llf", "edf-v2b", "llf-v2b"] {
-        let r = run(
-            &build(),
-            policy::by_name(name).expect("registered").as_ref(),
-        );
-        for rec in r.slots.iter().filter(|rec| rec.slot > 0 && rec.slot <= 12) {
-            assert!(
-                rec.net_kw <= 40.0 + 1e-9,
-                "{name}: charged past the firm level at slot {} ({} kW)",
-                rec.slot,
-                rec.net_kw
-            );
-        }
-        assert!(
-            r.sessions[0].target_met,
-            "{name}: target still met after the window"
-        );
-    }
-    // Positive control: uncontrolled ignores the firm level.
-    let r = run(
-        &build(),
-        policy::by_name("uncontrolled")
-            .expect("registered")
-            .as_ref(),
-    );
-    assert!(
-        r.slots[1].net_kw > 40.0 + 1e-9,
-        "uncontrolled should exceed the firm level (got {})",
-        r.slots[1].net_kw
-    );
-}
-
 /// M14: the 1e-9 target tolerance is load-bearing for third-party policies
 /// that land within floating-point dust of the target.
 struct AlmostExact;
@@ -279,25 +181,93 @@ fn unidirectional_port_never_discharges() {
     }
 }
 
-/// Audit gap (a)(6): LLF must order differently from EDF. Vehicle A departs
-/// LATER but has LOWER laxity (38 kWh of need at only 4 kW: laxity = 40 - 38
-/// = 2 slots); B departs sooner with a tiny need (laxity = 12 - 0.2 = 11.8).
-/// Under a 5 kW shared headroom, EDF serves B first (earlier departure), LLF
-/// serves A first (lower laxity): the first-slot allocations differ.
+/// Reference assignment: EVERY car prefers a bidirectional port (not just
+/// V2B-capable ones), ties broken by lowest charger id.
 #[test]
-fn llf_orders_by_laxity_not_departure() {
+fn assignment_prefers_bidirectional_for_every_car() {
+    let mut v = vehicle(0, 0, 8);
+    v.max_discharge_kw = 0.0; // not V2B-capable; still takes the bidi port
+    let s = base_scenario(8, vec![v], vec![charger(0, false), charger(1, true)]);
+    let r = run(
+        &s,
+        policy::by_name("policy-0").expect("registered").as_ref(),
+    );
+    assert_eq!(
+        r.trace[0].charger_id, 1,
+        "bidirectional port must be chosen first"
+    );
+}
+
+/// POLICY_1's discharge stops at the SoC floor: the get_rate gate returns 0
+/// below the floor and the engine clamps the final step at it.
+#[test]
+fn policy1_discharge_respects_floor() {
+    let mut v = vehicle(0, 0, 48);
+    v.soc_arrival_kwh = 35.0;
+    v.soc_target_kwh = 10.0;
+    v.min_soc_kwh = 30.0;
+    let mut s = base_scenario(48, vec![v], vec![charger(0, true)]);
+    s.building_load_kw = vec![80.0; 48];
+    for slot in 0..48 {
+        s.tou_class[slot] = TouClass::Peak;
+    }
+    let r = run(
+        &s,
+        policy::by_name("policy-1").expect("registered").as_ref(),
+    );
+    for t in &r.trace {
+        assert!(t.soc_kwh >= 30.0 - 1e-9, "below floor at slot {}", t.slot);
+    }
+    assert_abs_diff_eq!(r.sessions[0].soc_departure_kwh, 30.0, epsilon = 1e-9);
+}
+
+/// The reference EDF/LLF are DR-BLIND: the firm service level never enters
+/// their budget, so with threshold headroom they charge straight through a
+/// DR window and pay the penalty. This pins the faithful port; a mutant that
+/// couples the budget to the FSL fails here.
+#[test]
+fn edf_llf_are_dr_blind() {
+    for name in ["edf", "llf"] {
+        let mut v = vehicle(0, 0, 24);
+        v.soc_arrival_kwh = 5.0;
+        v.soc_target_kwh = 55.0;
+        let mut s = base_scenario(24, vec![v], vec![charger(0, true)]);
+        s.building_load_kw = vec![30.0; 24];
+        s.manifest.heuristic_threshold_kw = Some(100.0);
+        s.dr_events.push(dr_event(0, 12, 35.0)); // 5 kW below building+EV
+        let r = run(&s, policy::by_name(name).expect("registered").as_ref());
+        assert!(
+            r.bill.dr_penalty_usd > 0.0,
+            "{name} must ignore the firm level (reference is DR-blind)"
+        );
+        assert!(r.sessions[0].target_met, "{name}: still meets the target");
+    }
+}
+
+/// EDF sorts by deadline PRESSURE (need x charger rate / time), LLF by raw
+/// time-left: with a binding budget they allocate differently in slot 0.
+/// A: departs late with a big need (high pressure, long time). B: departs
+/// soon with a tiny need (low pressure, short time).
+#[test]
+fn edf_pressure_vs_llf_time_ordering() {
     let build = || {
-        let mut a = vehicle(0, 0, 40); // departs later, urgent
-        a.soc_arrival_kwh = 5.0;
-        a.soc_target_kwh = 43.0;
-        a.max_charge_kw = 4.0;
-        let mut b = vehicle(1, 0, 12); // departs sooner, relaxed
-        b.soc_arrival_kwh = 39.0;
-        b.soc_target_kwh = 40.0;
+        let mut a = vehicle(0, 0, 40);
+        a.soc_arrival_kwh = 10.0;
+        a.soc_target_kwh = 40.0; // 30 kWh over 10 h: 3 kW metered
+        let mut b = vehicle(1, 0, 12);
+        b.soc_arrival_kwh = 38.0;
+        b.soc_target_kwh = 40.0; // 2 kWh over 3 h: 0.667 kW metered
         let mut s = base_scenario(48, vec![a, b], vec![charger(0, true), charger(1, true)]);
-        s.building_load_kw = vec![50.0; 48];
-        s.manifest.site_cap_kw = Some(55.0); // 5 kW headroom for the fleet
+        s.building_load_kw = vec![97.0; 48];
+        s.manifest.heuristic_threshold_kw = Some(100.0); // 3 kW budget
         s
+    };
+    let power_at = |r: &openv2b::engine::Results, id: u32| {
+        r.trace
+            .iter()
+            .find(|t| t.slot == 0 && t.vehicle_id == id)
+            .map(|t| t.power_kw)
+            .unwrap_or(0.0)
     };
     let edf = run(
         &build(),
@@ -307,15 +277,11 @@ fn llf_orders_by_laxity_not_departure() {
         &build(),
         policy::by_name("llf").expect("registered").as_ref(),
     );
-    let first_a = |r: &openv2b::engine::Results| {
-        r.trace
-            .iter()
-            .find(|t| t.slot == 0 && t.vehicle_id == 0)
-            .expect("vehicle 0 traced")
-            .power_kw
-    };
-    // EDF: B (dep 12) takes 4 kW of the 5 kW headroom, A gets the remaining 1.
-    // LLF: A (laxity 2) takes its full 4 kW, B gets the remaining 1.
-    assert_abs_diff_eq!(first_a(&edf), 1.0, epsilon = 1e-9);
-    assert_abs_diff_eq!(first_a(&llf), 4.0, epsilon = 1e-9);
+    // EDF: A's pressure dominates; A takes the whole 3 kW budget, B starved.
+    assert_abs_diff_eq!(power_at(&edf, 0), 3.0, epsilon = 1e-9);
+    assert_abs_diff_eq!(power_at(&edf, 1), 0.0, epsilon = 1e-9);
+    // LLF: B (shorter time_left) first at its metered 0.667 kW; A gets the
+    // remainder via the reference's clip arithmetic.
+    assert!(power_at(&llf, 1) > 0.5, "LLF must serve B first");
+    assert!(power_at(&llf, 0) < 3.0, "LLF must leave A short in slot 0");
 }

@@ -117,8 +117,11 @@ pub fn run(scenario: &Scenario, policy: &dyn Policy) -> Results {
         )
     });
 
-    // Sessions waiting for a free charger, in arrival order.
+    // This slot's arrivals awaiting assignment (emptied every slot: the
+    // reference drops unassignable cars instead of queueing them).
     let mut waiting: Vec<usize> = Vec::new();
+    // Sessions that arrived but never obtained a charger.
+    let mut dropped: Vec<bool> = vec![false; scenario.vehicles.len()];
 
     for slot in 0..m.horizon_slots {
         // 1. Departures: a vehicle whose departure_slot == slot is gone before
@@ -131,10 +134,11 @@ pub fn run(scenario: &Scenario, policy: &dyn Policy) -> Results {
                     charger_free[session.charger_index] = true;
                     chain_soc.insert(v.vehicle_id, session.soc_kwh);
                     results_sessions.push(finish(v, &session, chain_clamped[i], false));
-                } else if waiting.contains(&i) {
-                    // Departed without ever obtaining a charger: report the
-                    // unserved session instead of dropping it silently.
-                    waiting.retain(|&w| w != i);
+                } else if dropped[i] {
+                    // Arrived but never obtained a charger: report the
+                    // unserved session instead of losing it silently (and
+                    // only once: the horizon-end sweep must not re-report).
+                    dropped[i] = false;
                     let session = unserved_session(i, arrival_soc[i]);
                     chain_soc.insert(v.vehicle_id, session.soc_kwh);
                     results_sessions.push(finish(v, &session, chain_clamped[i], true));
@@ -150,7 +154,7 @@ pub fn run(scenario: &Scenario, policy: &dyn Policy) -> Results {
                 if m.persistence {
                     if let Some(&prev_soc) = chain_soc.get(&v.vehicle_id) {
                         let raw = prev_soc - v.depletion_kwh;
-                        let clamped = raw.clamp(v.min_soc_kwh, v.battery_kwh);
+                        let clamped = raw.clamp(v.min_soc_kwh, v.ceiling_kwh());
                         arrival_soc[i] = clamped;
                         // Energy the clamp invented (declared trip infeasible).
                         chain_clamped[i] = (clamped - raw).max(0.0);
@@ -160,34 +164,34 @@ pub fn run(scenario: &Scenario, policy: &dyn Policy) -> Results {
             }
         }
 
-        // 3. Assign free chargers to waiting sessions, arrival order first.
-        //    Capability-aware: V2B-capable vehicles prefer bidirectional
-        //    ports and others prefer unidirectional ports, so a discharge
-        //    resource is never stranded on a unidirectional port while a
-        //    bidirectional one sits free. Falls back to any free port.
-        waiting.retain(|&i| {
-            let v = &scenario.vehicles[i];
-            let wants_bidi = v.max_discharge_kw > 0.0;
-            let preferred = charger_free
-                .iter()
-                .enumerate()
-                .position(|(c, &free)| free && scenario.chargers[c].bidirectional == wants_bidi);
-            let fallback = charger_free.iter().position(|&free| free);
-            if let Some(c) = preferred.or(fallback) {
-                charger_free[c] = false;
-                active[i] = Some(Session {
-                    vehicle_index: i,
-                    charger_index: c,
-                    soc_arrival_kwh: arrival_soc[i],
-                    soc_kwh: arrival_soc[i],
-                    energy_drawn_kwh: 0.0,
-                    energy_exported_kwh: 0.0,
-                });
-                false
-            } else {
-                true
+        // 3. Assignment, reference semantics: this slot's waiting cars are
+        //    processed in ascending vehicle-id order; each takes the first
+        //    vacant port with bidirectional ports preferred (ties: lowest
+        //    charger id, our stable-tie divergence); a car that finds no
+        //    vacant port is DROPPED permanently (never retried), exactly as
+        //    the reference does, and is reported `never_connected` at its
+        //    departure.
+        waiting.sort_by_key(|&i| scenario.vehicles[i].vehicle_id);
+        for &i in waiting.iter() {
+            let pick = (0..scenario.chargers.len())
+                .filter(|&c| charger_free[c])
+                .min_by_key(|&c| (!scenario.chargers[c].bidirectional, c));
+            match pick {
+                Some(c) => {
+                    charger_free[c] = false;
+                    active[i] = Some(Session {
+                        vehicle_index: i,
+                        charger_index: c,
+                        soc_arrival_kwh: arrival_soc[i],
+                        soc_kwh: arrival_soc[i],
+                        energy_drawn_kwh: 0.0,
+                        energy_exported_kwh: 0.0,
+                    });
+                }
+                None => dropped[i] = true,
             }
-        });
+        }
+        waiting.clear();
 
         // 4. Build the observation and ask the policy.
         let dr_fsl_kw = scenario
@@ -251,6 +255,7 @@ pub fn run(scenario: &Scenario, policy: &dyn Policy) -> Results {
             building_series: &scenario.building_load_kw,
             tou_series: &scenario.tou_class,
             dr_events: &scenario.dr_events,
+            heuristic_threshold_kw: m.heuristic_threshold_kw,
             demand_charge_usd_per_kw: m.demand_charge_usd_per_kw,
             demand_charge_peak_usd_per_kw: m.demand_charge_peak_usd_per_kw,
         };
@@ -350,7 +355,7 @@ pub fn run(scenario: &Scenario, policy: &dyn Policy) -> Results {
         let v = &scenario.vehicles[i];
         if let Some(session) = slot_state.take() {
             results_sessions.push(finish(v, &session, chain_clamped[i], false));
-        } else if waiting.contains(&i) {
+        } else if dropped[i] {
             results_sessions.push(finish(
                 v,
                 &unserved_session(i, arrival_soc[i]),
@@ -390,7 +395,7 @@ fn apply_setpoint(
         // Charging: grid-side power, battery gains eta_c fraction.
         let mut p = sp.power_kw.min(view.max_charge_kw).min(site_cap_kw);
         // Don't overfill the battery.
-        let room_kwh = v.battery_kwh - session.soc_kwh;
+        let room_kwh = v.ceiling_kwh() - session.soc_kwh;
         let max_grid_kwh = if eta_c > 0.0 { room_kwh / eta_c } else { 0.0 };
         p = p.min(kwh_to_kw(max_grid_kwh, dt_min)).max(0.0);
         let grid_kwh = kw_to_kwh(p, dt_min);

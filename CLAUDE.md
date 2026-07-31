@@ -21,7 +21,7 @@ cargo test --features solver-highs           # +4 MPC tests (in-process HiGHS)
 cargo test --features solver-highs -- --ignored   # CPLEX CLI parity (needs local CPLEX)
 cargo fmt --check && cargo clippy --all-targets -- -D warnings   # CI gates (run BOTH feature sets)
 cargo run --release --bin gen_month          # regenerate examples/one_month*
-cargo run --release -- --scenario examples/one_day --policy edf-v2b --out /tmp/out
+cargo run --release -- --scenario examples/one_day --policy llf --out /tmp/out
 python3 tools/referee.py examples/one_day /tmp/out        # independent verification
 python3 tools/run_verification.py            # full campaign: 18+ runs, referee + determinism
 python3 tools/md2html.py reports/OVERNIGHT_REPORT.md      # report HTML (never hand-edit .html)
@@ -34,13 +34,18 @@ python3 tools/md2html.py reports/OVERNIGHT_REPORT.md      # report HTML (never h
 - `src/state.rs`: `Observation` (what policies see; sessions in canonical (arrival, vehicle_id)
   order), `SessionView`, `Setpoint` (signed kW; + charge grid-side, - discharge building-side).
 - `src/engine.rs`: the simulation loop. Slot order: departures -> arrivals (persistence chain
-  resolves here) -> capability-aware charger assignment -> policy -> clamp & integrate. THE
+  resolves here) -> reference charger assignment (ascending vehicle id, bidirectional ports
+  first for EVERY car, unassignable cars dropped permanently) -> policy -> clamp & integrate. THE
   ENGINE OWNS FEASIBILITY: per-port caps, SoC floor/ceiling, site cap, no-export guard,
   non-finite setpoint rejection, one-setpoint-per-session. Scarce headroom is rationed in the
   POLICY'S EMISSION ORDER (never CSV row order).
-- `src/policy/`: `Policy` trait (pure, deterministic), heuristics (idle, uncontrolled, EDF,
-  LLF, +V2B variants with off-peak banking, surplus-only discharge budget, force-charge
-  fallback), and `mpc.rs` (receding-horizon LP, honest information set).
+- `src/policy/`: `Policy` trait (deterministic; per-episode instance state allowed, e.g. the
+  EDF/LLF ratchet). Heuristics are FAITHFUL OPTIMUS PORTS (docs/OPTIMUS_PORT.md): policy-0/1/2
+  and the threshold-budget edf/llf (parquet-or-fallback threshold, strict eligibility, signed
+  needs as the discharge channel, taper-last, 1-hour force-charge bypass, monotone ratchet).
+  POLICY_3 omitted (non-functional in the reference). idle/uncontrolled are openv2b-native
+  baselines. `mpc.rs` (receding LP), `oracle.rs` (full-horizon, persistence-coupled, FSL
+  optimization).
 - `src/milp/`: solver-agnostic `MilpBackend` trait; `cli.rs` (LP-file + any solver CLI,
   CPLEX-verified), `highs_backend.rs` (in-process, feature `solver-highs`).
 - `src/billing.rs`: energy on imports, two demand components (facilities all-slots peak +
@@ -58,8 +63,11 @@ python3 tools/md2html.py reports/OVERNIGHT_REPORT.md      # report HTML (never h
    `tests/dr_window_table.rs`. Change all or none.
 2. Determinism is a contract: no wall clock, no unseeded randomness, byte-identical reruns,
    row-permutation invariance. The verification driver checks two-process SHA-256.
-3. V2B heuristics may only discharge surplus above max(target, floor); MPC may borrow below
-   target because its LP proves recovery. The referee enforces the first for heuristics only.
+3. Heuristic policy logic is REPLICATED from OPTIMUS, never redesigned (2026-07-31 lesson: a
+   silently substituted algorithm under the same name invalidated cross-simulator comparisons).
+   Deviations require a different policy name plus a loud callout. Acceptance test for a port:
+   bill parity vs the reference on RISHAV_WEEK, residuals attributed to named, ruled
+   divergences (see docs/OPTIMUS_PORT.md).
 4. Tests must make the guarded path BIND. The recurring review failure mode was tests passing
    "for the wrong reason" (geometry never exercised the guard). When adding a test, check what
    would happen under the mutation it is meant to kill.
@@ -111,7 +119,7 @@ Missing elements, all additive at existing seams, none architectural:
   gate (both documented in SPEC and pinned by tests).
 
 Measured runtime reference (this machine, month-scale, 30 days x 96 slots): openv2b heuristic
-(llf / llf-v2b) ~3.4 ms per full run including CSV I/O; MPC (2880 in-process HiGHS re-solves)
+(llf) ~3.4 ms per full run including CSV I/O; MPC (2880 in-process HiGHS re-solves)
 ~1.7 s. OPTIMUS non-ILP month episodes recorded 18-41 s in their own metrics.json (~5 ms per
 event), i.e. openv2b heuristics are ~4 orders of magnitude faster.
 

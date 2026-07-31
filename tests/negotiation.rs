@@ -96,7 +96,7 @@ fn accepted_contract_runs_and_is_honored() {
     modified.validate().expect("negotiated scenario is valid");
     let result = run(
         &modified,
-        policy::by_name("edf").expect("registered").as_ref(),
+        policy::by_name("policy-0").expect("registered").as_ref(),
     );
     let sess = &result.sessions[0];
     assert_eq!(
@@ -166,10 +166,13 @@ fn negotiation_reduces_the_bill_when_flexibility_has_value() {
     s.building_load_kw = vec![40.0; 64];
     s.dr_events.push(dr_event(4, 20, 42.0)); // charging in-window is penalized
     let (modified, records) = negotiate(&s, &HighsBackend, &config()).expect("negotiates");
-    let before = run(&s, policy::by_name("edf").expect("registered").as_ref());
+    let before = run(
+        &s,
+        policy::by_name("policy-0").expect("registered").as_ref(),
+    );
     let after = run(
         &modified,
-        policy::by_name("edf").expect("registered").as_ref(),
+        policy::by_name("policy-0").expect("registered").as_ref(),
     );
     if !records[0].chosen_is_reject {
         assert!(

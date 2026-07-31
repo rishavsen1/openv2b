@@ -29,17 +29,17 @@ jobs:
       # it re-simulates reference policies from scratch and re-derives every
       # billing/physics metric from the raw outputs. It must run in CI, not
       # only when someone remembers to invoke it.
-      - name: Referee (one_day, edf-v2b)
+      - name: Referee (one_day, policy-1)
         run: |
           cargo build --release
-          ./target/release/openv2b --scenario examples/one_day --policy edf-v2b --out /tmp/ref_day
+          ./target/release/openv2b --scenario examples/one_day --policy policy-1 --out /tmp/ref_day
           python3 tools/referee.py examples/one_day /tmp/ref_day
-      - name: Referee (one_month, uncontrolled resim + lossy edf-v2b)
+      - name: Referee (one_month, uncontrolled resim + lossy llf)
         run: |
           cargo run --release --bin gen_month
           ./target/release/openv2b --scenario examples/one_month --policy uncontrolled --out /tmp/ref_month
           python3 tools/referee.py examples/one_month /tmp/ref_month
-          ./target/release/openv2b --scenario examples/one_month_lossy --policy edf-v2b --out /tmp/ref_lossy
+          ./target/release/openv2b --scenario examples/one_month_lossy --policy llf --out /tmp/ref_lossy
           python3 tools/referee.py examples/one_month_lossy /tmp/ref_lossy
 
   msrv:

@@ -4,26 +4,15 @@ mod heuristics;
 pub mod mpc;
 pub mod oracle;
 
-pub use heuristics::{EarliestDeadlineFirst, LeastLaxityFirst, Uncontrolled};
+pub use heuristics::{Idle, Policy0, Policy1, Policy2, ThresholdScheduler, Uncontrolled};
 
 use crate::state::{Observation, Setpoint};
 
-/// Never charges or discharges anything. The building-only baseline for
-/// EV-vs-building cost attribution.
-pub struct Idle;
-
-impl Policy for Idle {
-    fn name(&self) -> &'static str {
-        "idle"
-    }
-    fn decide(&self, _obs: &Observation) -> Vec<Setpoint> {
-        Vec::new()
-    }
-}
-
 /// A charging policy: maps the observable state of one slot to a power
 /// setpoint per connected session. Implementations must be deterministic
-/// and side-effect free.
+/// given the run; they may keep private per-episode state (e.g. the EDF/LLF
+/// threshold ratchet, mirroring the reference's instance attributes) but
+/// must not touch the environment.
 pub trait Policy {
     fn name(&self) -> &'static str;
     fn decide(&self, obs: &Observation) -> Vec<Setpoint>;
@@ -34,13 +23,25 @@ pub fn by_name(name: &str) -> Option<Box<dyn Policy>> {
     match name {
         "idle" => Some(Box::new(Idle)),
         "uncontrolled" => Some(Box::new(Uncontrolled)),
-        "edf" => Some(Box::new(EarliestDeadlineFirst { v2b: false })),
-        "edf-v2b" => Some(Box::new(EarliestDeadlineFirst { v2b: true })),
-        "llf" => Some(Box::new(LeastLaxityFirst { v2b: false })),
-        "llf-v2b" => Some(Box::new(LeastLaxityFirst { v2b: true })),
+        "policy-0" => Some(Box::new(Policy0)),
+        "policy-1" => Some(Box::new(Policy1)),
+        "policy-2" => Some(Box::new(Policy2)),
+        "edf" => Some(Box::new(ThresholdScheduler::edf())),
+        "llf" => Some(Box::new(ThresholdScheduler::llf())),
         _ => None,
     }
 }
 
-/// Names accepted by [`by_name`], for CLI help output.
-pub const POLICY_NAMES: &[&str] = &["idle", "uncontrolled", "edf", "edf-v2b", "llf", "llf-v2b"];
+/// Names accepted by [`by_name`], for CLI help output. `edf`/`llf` and
+/// `policy-0/1/2` are faithful OPTIMUS ports; POLICY_3 is deliberately
+/// omitted (non-functional in the reference: its discharge leg calls a
+/// method that does not exist).
+pub const POLICY_NAMES: &[&str] = &[
+    "idle",
+    "uncontrolled",
+    "policy-0",
+    "policy-1",
+    "policy-2",
+    "edf",
+    "llf",
+];

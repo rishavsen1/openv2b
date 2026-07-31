@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-POLICIES = ["idle", "uncontrolled", "edf", "edf-v2b", "llf", "llf-v2b"]
+POLICIES = ["idle", "uncontrolled", "policy-0", "policy-1", "policy-2", "edf", "llf"]
 OUTPUT_FILES = ["slots.csv", "sessions.csv", "trace.csv", "summary.json"]
 
 

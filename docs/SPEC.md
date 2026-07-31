@@ -13,9 +13,10 @@ indices. Conversion: `kWh per slot = kW * slot_minutes / 60`.
   1. **Departures**: every vehicle with `departure_slot == s` is disconnected; its charger frees.
   2. **Arrivals**: every vehicle with `arrival_slot == s` joins the waiting queue, ordered by
      `(arrival_slot, vehicle_id)`.
-  3. **Charger assignment**: waiting vehicles claim free chargers in queue order, using the
-     capability-aware port preference described in section 4. A vehicle that finds no charger
-     waits; if it departs while still waiting it is reported as `never_connected`.
+  3. **Charger assignment**: this slot's arrivals, in ascending vehicle id, each claim the
+     first vacant port with bidirectional ports preferred (section 4). A vehicle that finds
+     no vacant port is dropped permanently (reference semantics: never retried) and is
+     reported `never_connected` at its departure.
   4. **Decision**: the policy sees the observation (section 4) and returns one signed power
      setpoint per connected session.
   5. **Integration**: the engine clamps each setpoint to physical limits and integrates energy
@@ -81,7 +82,9 @@ Let `dt = slot_minutes / 60` hours, `eta_c` = charge efficiency, `eta_d` = disch
 
 ## 4. Policy interface
 
-A policy is a deterministic pure function of the observation:
+A policy is a deterministic function of the observation (per-episode instance state is
+allowed, e.g. the EDF/LLF threshold ratchet, mirroring the reference; one policy instance
+serves exactly one run):
 
 - observation: slot index, slot length, this slot's building load and price, the full price
   series (day-ahead prices are public information), site cap, the active DR firm level (minimum
@@ -90,40 +93,26 @@ A policy is a deterministic pure function of the observation:
 - decision: a list of `(session, signed power kW)` setpoints; positive charges, negative
   discharges. Unlisted sessions default to 0.
 
-Built-in policies:
+Built-in policies (see docs/OPTIMUS_PORT.md for the full fidelity contract):
 
-- **uncontrolled**: every session charges at min(need expressed as grid power, its limit) until
-  the target is reached. The reference "dumb charging" baseline.
-- **edf / llf**: priority scheduling. EDF orders by departure slot; LLF by laxity = slots
-  remaining minus slots needed at full power (recomputed every slot). Both allocate
-  charge-toward-target power in priority order against the slot's headroom
-  (min(site cap, DR firm level) minus building load). **Force-charge fallback**: once a
-  session's laxity reaches zero (the target is only just reachable at full power), the economic
-  headroom yields to the service guarantee: the session charges at its full target rate even
-  inside a DR window, eating the window penalty. Physical limits (site cap, no-export) still
-  apply. Without this, a DR window whose firm level sits below the building load would starve a
-  trivially feasible session.
-- **edf-v2b / llf-v2b**: same, plus **banking** and a discharge overlay. Banking: outside
-  peak-price TOU slots the charge goal is the battery capacity rather than the departure
-  target, so surplus accumulates for later windows (without banking, a persistence-chained
-  donor whose sessions only charge to target runs permanently dry after its first discharge,
-  because chained arrivals can never exceed the previous departure). Discharge overlay during DR
-  windows: if net load exceeds the firm level, sessions are visited in reverse priority order,
-  first cancelling planned charging (never below a force-charged session's needs) and then
-  discharging — but only within each session's *discharge budget*: the battery-side surplus
-  above `max(departure target, SoC floor)`, converted to building-side power via the discharge
-  efficiency. Surplus-only discharge is deliberately conservative: a "borrow now, recharge
-  later" budget requires knowing future charging headroom (which a DR window binds to zero) and
-  was demonstrated to sacrifice departure targets when the window abuts departure. This budget
-  guarantees V2B never causes a target miss, whatever follows (tested, including under
-  asymmetric efficiencies).
-- **idle**: never charges or discharges; the building-only baseline for EV-vs-building cost
-  attribution.
+- **idle / uncontrolled**: openv2b-native baselines (nothing / charge toward target at max).
+- **policy-0**: reference JIT: charge below-target cars at exactly the minimum constant rate
+  reaching the target by departure (toleranced eligibility, taper, never discharges).
+- **policy-1**: off-peak and super-off-peak, charge below-ceiling cars at full rate; at peak,
+  discharge above-target cars at full rate; the discharge pass overwrites the charge pass.
+- **policy-2**: charge below-ceiling cars at full rate ONLY at off-peak exactly.
+- **edf / llf**: the reference threshold-budget schedulers: a ratcheting `historical_max_load`
+  threshold (manifest `heuristic_threshold_kw` or 0.8 x max building load) bounds a budget
+  walk in priority order (EDF: descending deadline-pressure score; LLF: ascending time-left,
+  which IS the reference's algorithm despite its name); strict eligibility (peak: below
+  target, else below ceiling); signed needs give a metered discharge channel; a 1-hour
+  force-charge fallback serves departing cars outside the budget; the >90%-of-true-capacity
+  taper applies last. DR-BLIND by design: the firm level never enters their budget.
+- POLICY_3 is deliberately omitted (non-functional in the reference).
 
-**Charger assignment** is capability-aware: V2B-capable vehicles (discharge limit > 0) prefer
-the lowest free bidirectional port, others prefer unidirectional ports, with fallback to any
-free port; queue order is (arrival slot, vehicle id). This prevents a discharge resource being
-stranded on a unidirectional port while a bidirectional port sits free.
+**Charger assignment** follows the reference: arrivals in ascending vehicle id, every car
+prefers a bidirectional port (lowest id ties), and a car that finds no vacant port is dropped
+permanently (never retried), reported `never_connected` at departure.
 
 ## 5. Billing
 

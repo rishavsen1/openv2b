@@ -10,62 +10,6 @@ use openv2b::engine::run;
 use openv2b::policy::{self, Policy, POLICY_NAMES};
 use openv2b::state::{Observation, Setpoint};
 
-/// R1-1 (CRITICAL): a DR window that abuts departure must not let V2B
-/// discharge sacrifice the departure target. Geometry from the review probe:
-/// arrive at target, building load above the firm level for the whole rest of
-/// the session, so nothing below the target can ever be recovered. Banked
-/// energy (charged above the target before the window) MAY be exported; the
-/// SoC must simply never end below the target.
-#[test]
-fn dr_window_abutting_departure_cannot_sacrifice_target() {
-    for name in ["edf-v2b", "llf-v2b"] {
-        let mut v = vehicle(0, 0, 20);
-        v.soc_arrival_kwh = 40.0;
-        v.soc_target_kwh = 40.0;
-        let mut s = base_scenario(24, vec![v], vec![charger(0, true)]);
-        s.building_load_kw = vec![50.0; 24];
-        s.dr_events.push(dr_event(4, 20, 40.0)); // covers slots 5..=20, departure at 20
-        let r = run(&s, policy::by_name(name).expect("registered").as_ref());
-        assert!(
-            r.sessions[0].target_met,
-            "{name}: target sacrificed (SoC {} < 40)",
-            r.sessions[0].soc_departure_kwh
-        );
-        assert!(
-            r.sessions[0].soc_departure_kwh >= 40.0 - 1e-9,
-            "{name}: departed below target"
-        );
-        // Anything exported must have been banked first, never taken from
-        // the target reserve: exports <= eta_d * charged-above-arrival.
-        let banked_in = r.sessions[0].energy_drawn_kwh; // arrival was at target
-        assert!(
-            r.sessions[0].energy_exported_kwh <= banked_in + 1e-9,
-            "{name}: exported more than was banked"
-        );
-    }
-}
-
-/// R1-1 companion: surplus above the target IS discharged in the same geometry.
-#[test]
-fn surplus_above_target_still_discharges() {
-    let mut v = vehicle(0, 0, 20);
-    v.soc_arrival_kwh = 55.0;
-    v.soc_target_kwh = 20.0;
-    let mut s = base_scenario(24, vec![v], vec![charger(0, true)]);
-    s.building_load_kw = vec![50.0; 24];
-    s.dr_events.push(dr_event(4, 20, 40.0));
-    let r = run(&s, policy::by_name("edf-v2b").expect("registered").as_ref());
-    assert!(
-        r.sessions[0].energy_exported_kwh > 0.0,
-        "surplus must be used"
-    );
-    assert!(r.sessions[0].target_met, "and the target still met");
-    assert!(
-        r.sessions[0].soc_departure_kwh >= 20.0 - 1e-9,
-        "never below target"
-    );
-}
-
 /// R1-2 (CRITICAL): DR events outside the horizon are rejected at validation,
 /// so no incentive can be paid for an unsimulated window.
 #[test]
@@ -224,58 +168,6 @@ fn site_cap_is_engine_enforced() {
     }
 }
 
-/// R1-7 (MAJOR): capability-aware assignment: a V2B donor arriving after a
-/// non-V2B vehicle still ends up on the bidirectional port and can discharge.
-#[test]
-fn v2b_donor_gets_bidirectional_port() {
-    let mut v0 = vehicle(0, 0, 8);
-    v0.max_discharge_kw = 0.0; // arrives first, cannot V2B
-    let mut v1 = vehicle(1, 0, 8);
-    v1.soc_arrival_kwh = 55.0;
-    v1.soc_target_kwh = 10.0; // arrives second, big surplus
-    let mut s = base_scenario(8, vec![v0, v1], vec![charger(0, false), charger(1, true)]);
-    s.building_load_kw = vec![50.0; 8];
-    s.dr_events.push(dr_event(0, 7, 40.0));
-    let r = run(&s, policy::by_name("edf-v2b").expect("registered").as_ref());
-    let donor = r
-        .sessions
-        .iter()
-        .find(|x| x.vehicle_id == 1)
-        .expect("donor session");
-    assert!(
-        donor.energy_exported_kwh > 0.0,
-        "donor stranded on a unidirectional port"
-    );
-}
-
-/// Referee catch (lossy month run): the discharge budget is battery-side
-/// energy but setpoints are building-side power; without applying eta_d the
-/// battery dips below the reserved level by the conversion loss. The reserve
-/// must hold under asymmetric efficiencies.
-#[test]
-fn lossy_discharge_never_dips_below_reserve() {
-    for name in ["edf-v2b", "llf-v2b"] {
-        let mut v = vehicle(0, 0, 40);
-        v.soc_arrival_kwh = 55.0;
-        v.soc_target_kwh = 40.0;
-        let mut s = base_scenario(48, vec![v], vec![charger(0, true)]);
-        s.manifest.charge_efficiency = 0.92;
-        s.manifest.discharge_efficiency = 0.94;
-        s.building_load_kw = vec![60.0; 48];
-        s.dr_events.push(dr_event(2, 40, 40.0)); // deep window, big shortfall
-        let r = run(&s, policy::by_name(name).expect("registered").as_ref());
-        for t in &r.trace {
-            assert!(
-                t.soc_kwh >= 40.0 - 1e-9,
-                "{name}: slot {} SoC {} dipped below the 40 kWh reserve",
-                t.slot,
-                t.soc_kwh
-            );
-        }
-        assert!(r.sessions[0].target_met, "{name}: target must hold");
-    }
-}
-
 /// R1-16 (MAJOR) P21: site energy balance ties slots.csv to sessions.csv:
 /// sum(net * dt) = building energy + total drawn - total exported.
 #[test]
@@ -350,9 +242,15 @@ fn vehicle_row_permutation_invariance() {
         base_scenario(48, vehicles, vec![charger(0, true), charger(1, false)])
     };
     for name in POLICY_NAMES {
-        let pol = policy::by_name(name).expect("registered");
-        let a = run(&mk(&[0, 1, 2]), pol.as_ref());
-        let b = run(&mk(&[2, 0, 1]), pol.as_ref());
+        // Fresh instance per run: the EDF/LLF ratchet is per-episode state.
+        let a = run(
+            &mk(&[0, 1, 2]),
+            policy::by_name(name).expect("registered").as_ref(),
+        );
+        let b = run(
+            &mk(&[2, 0, 1]),
+            policy::by_name(name).expect("registered").as_ref(),
+        );
         assert_eq!(
             serde_json::to_string(&a.sessions).expect("serialize"),
             serde_json::to_string(&b.sessions).expect("serialize"),
@@ -371,7 +269,7 @@ fn trace_shows_charger_exclusivity() {
         vec![charger(0, true), charger(1, false)],
     );
     s.dr_events.push(dr_event(12, 20, 40.0));
-    let r = run(&s, policy::by_name("llf-v2b").expect("registered").as_ref());
+    let r = run(&s, policy::by_name("llf").expect("registered").as_ref());
     let mut seen = std::collections::HashSet::new();
     for t in &r.trace {
         assert!(
@@ -397,5 +295,29 @@ fn trace_shows_charger_exclusivity() {
             .sum();
         assert_abs_diff_eq!(charge, rec.ev_charge_kw, epsilon = 1e-9);
         assert_abs_diff_eq!(discharge, rec.ev_discharge_kw, epsilon = 1e-9);
+    }
+}
+
+/// The engine's SoC floor holds under lossy discharge for the ported
+/// discharge channel (POLICY_1 at peak), replacing the deleted overlay test.
+#[test]
+fn engine_floor_holds_under_lossy_discharge() {
+    let mut v = vehicle(0, 0, 40);
+    v.soc_arrival_kwh = 55.0;
+    v.soc_target_kwh = 10.0;
+    v.min_soc_kwh = 20.0;
+    let mut s = base_scenario(48, vec![v], vec![charger(0, true)]);
+    s.manifest.charge_efficiency = 0.92;
+    s.manifest.discharge_efficiency = 0.94;
+    s.building_load_kw = vec![60.0; 48];
+    for slot in 0..48 {
+        s.tou_class[slot] = openv2b::scenario::TouClass::Peak;
+    }
+    let r = run(
+        &s,
+        policy::by_name("policy-1").expect("registered").as_ref(),
+    );
+    for t in &r.trace {
+        assert!(t.soc_kwh >= 20.0 - 1e-9, "below floor at slot {}", t.slot);
     }
 }

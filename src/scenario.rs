@@ -32,6 +32,11 @@ pub struct Manifest {
     /// class is `peak` ("time-related" component).
     #[serde(default)]
     pub demand_charge_peak_usd_per_kw: f64,
+    /// Threshold (kW) seeding the EDF/LLF budget schedulers (OPTIMUS
+    /// `historical_max_load`; the converter carries the reference's parquet
+    /// lookup). Absent: the reference fallback 0.8 * max building load.
+    #[serde(default)]
+    pub heuristic_threshold_kw: Option<f64>,
     /// Whether sessions of the same vehicle chain their SoC across sessions
     /// (arrival SoC of a later session = previous departure SoC minus
     /// `depletion_kwh`, clamped). When false, every session uses its own
@@ -93,11 +98,24 @@ pub struct Vehicle {
     /// Hard SoC floor, kWh: discharge may never take the battery below this.
     #[serde(default)]
     pub min_soc_kwh: f64,
+    /// Operating ceiling, kWh (OPTIMUS `max_allowed_soc`): charging may never
+    /// take the battery above this. Defaults to the full capacity. The
+    /// heuristics' >90% taper anchors to the TRUE capacity (`battery_kwh`),
+    /// not to this ceiling, mirroring the reference implementation.
+    #[serde(default)]
+    pub max_soc_kwh: Option<f64>,
     /// Battery energy consumed between the previous session's departure and
     /// this arrival (driving), kWh. Only meaningful for the second and later
     /// sessions of a vehicle when persistence is on; ignored otherwise.
     #[serde(default)]
     pub depletion_kwh: f64,
+}
+
+impl Vehicle {
+    /// The effective charging ceiling: `max_soc_kwh` when set, else capacity.
+    pub fn ceiling_kwh(&self) -> f64 {
+        self.max_soc_kwh.unwrap_or(self.battery_kwh)
+    }
 }
 
 /// A charging station port.
@@ -467,6 +485,19 @@ impl Scenario {
                     v.vehicle_id
                 )));
             }
+            if let Some(ceiling) = v.max_soc_kwh {
+                if !ceiling.is_finite()
+                    || ceiling < v.min_soc_kwh
+                    || ceiling > v.battery_kwh
+                    || v.soc_arrival_kwh > ceiling
+                    || v.soc_target_kwh > ceiling
+                {
+                    return Err(ScenarioError::Invalid(format!(
+                        "vehicle {}: max_soc_kwh must lie in [min_soc, battery] and bound arrival/target",
+                        v.vehicle_id
+                    )));
+                }
+            }
         }
         // Sessions of the same vehicle must not overlap in time (required for
         // persistence chaining to be well-defined, and physically: one vehicle
@@ -526,6 +557,7 @@ impl Scenario {
             if let Some(first) = by_id.get(&v.vehicle_id) {
                 if v.battery_kwh != first.battery_kwh
                     || v.min_soc_kwh != first.min_soc_kwh
+                    || v.max_soc_kwh != first.max_soc_kwh
                     || v.max_charge_kw != first.max_charge_kw
                     || v.max_discharge_kw != first.max_discharge_kw
                 {

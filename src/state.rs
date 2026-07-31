@@ -49,6 +49,8 @@ pub struct Observation<'a> {
     pub tou_series: &'a [crate::scenario::TouClass],
     /// All demand-response events (public program information).
     pub dr_events: &'a [crate::scenario::DrEvent],
+    /// Threshold seed for the EDF/LLF budget schedulers, kW (manifest).
+    pub heuristic_threshold_kw: Option<f64>,
     /// Facilities demand rate, USD/kW on the all-slots peak.
     pub demand_charge_usd_per_kw: f64,
     /// Time-related demand rate, USD/kW on the peak-TOU-class peak.

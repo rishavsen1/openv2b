@@ -134,14 +134,24 @@ fn power_caps_respected() {
 }
 
 /// Invariant 5: determinism. Two runs of the same scenario/policy serialize
-/// byte-identically.
+/// byte-identically. Policies are stateful per episode (the EDF/LLF ratchet,
+/// mirroring the reference's per-episode instances), so each run gets a
+/// FRESH instance, exactly as each reference episode constructs its own.
 #[test]
 fn determinism_byte_identical() {
-    for pol in all_policies() {
+    for name in POLICY_NAMES {
         let scenario = rich_scenario();
-        let a = serde_json::to_string(&run(&scenario, pol.as_ref())).expect("results serialize");
-        let b = serde_json::to_string(&run(&scenario, pol.as_ref())).expect("results serialize");
-        assert_eq!(a, b, "policy {} is nondeterministic", pol.name());
+        let a = serde_json::to_string(&run(
+            &scenario,
+            policy::by_name(name).expect("registered").as_ref(),
+        ))
+        .expect("results serialize");
+        let b = serde_json::to_string(&run(
+            &scenario,
+            policy::by_name(name).expect("registered").as_ref(),
+        ))
+        .expect("results serialize");
+        assert_eq!(a, b, "policy {name} is nondeterministic");
     }
 }
 
@@ -174,14 +184,72 @@ fn bill_identity_and_overflow_definition() {
     }
 }
 
-/// Departure guarantee: with ample time and no contention, every policy that
-/// charges toward the target actually reaches it.
+/// POLICY_1 is the reference's explicit discharge channel: at peak TOU it
+/// discharges above-target cars at the charger's full rate, reducing net
+/// load below the building baseline.
+#[test]
+fn policy1_discharges_above_target_cars_at_peak() {
+    let mut v = vehicle(0, 0, 48);
+    v.soc_arrival_kwh = 55.0;
+    v.soc_target_kwh = 20.0;
+    let mut s = base_scenario(48, vec![v], vec![charger(0, true)]);
+    s.building_load_kw = vec![50.0; 48];
+    for slot in 10..20 {
+        s.tou_class[slot] = openv2b::scenario::TouClass::Peak;
+    }
+    let r = run(
+        &s,
+        policy::by_name("policy-1").expect("registered").as_ref(),
+    );
+    let peak_discharge: f64 = r.slots[10..20].iter().map(|x| x.ev_discharge_kw).sum();
+    assert!(
+        peak_discharge > 0.0,
+        "policy-1 must discharge at peak (got {peak_discharge})"
+    );
+    for rec in &r.slots[10..20] {
+        assert!(
+            rec.net_kw <= 50.0 + 1e-9,
+            "discharge must reduce net below building"
+        );
+    }
+}
+
+/// The reference's force-charge discharge channel: within the final hour, an
+/// above-target car is discharged at exactly the metered rate that lands it
+/// on the target at departure.
+#[test]
+fn force_charge_meters_discharge_onto_the_target() {
+    let mut v = vehicle(0, 0, 24);
+    v.soc_arrival_kwh = 45.0;
+    v.soc_target_kwh = 40.0;
+    let mut scenario = base_scenario(48, vec![v], vec![charger(0, true)]);
+    scenario.manifest.heuristic_threshold_kw = Some(100.0);
+    for name in ["edf", "llf"] {
+        let results = run(
+            &scenario,
+            policy::by_name(name).expect("registered").as_ref(),
+        );
+        let s = &results.sessions[0];
+        assert!(s.target_met, "policy {name}: target missed");
+        assert_abs_diff_eq!(s.soc_departure_kwh, 40.0, epsilon = 1e-9);
+        assert!(
+            s.energy_exported_kwh > 0.0,
+            "policy {name}: the 5 kWh surplus must be discharged in the final hour"
+        );
+    }
+}
+
+/// Departure guarantee: with ample time, budget headroom, and no contention,
+/// the target-seeking policies reach the target. (policy-1/2 are TOU-gated
+/// chargers with no such guarantee; edf/llf need the threshold above the
+/// building load or only the 1-hour force-charge window serves.)
 #[test]
 fn feasible_targets_are_met() {
-    for name in ["uncontrolled", "edf", "llf", "edf-v2b", "llf-v2b"] {
+    for name in ["uncontrolled", "policy-0", "edf", "llf"] {
         let pol = policy::by_name(name).expect("registered policy");
         // Need 20 kWh at up to 20 kW: 4 slots suffice; give 40.
-        let scenario = base_scenario(48, vec![vehicle(0, 0, 40)], vec![charger(0, true)]);
+        let mut scenario = base_scenario(48, vec![vehicle(0, 0, 40)], vec![charger(0, true)]);
+        scenario.manifest.heuristic_threshold_kw = Some(100.0); // headroom over the 50 kW building
         let results = run(&scenario, pol.as_ref());
         assert!(
             results.sessions[0].target_met,
@@ -190,14 +258,14 @@ fn feasible_targets_are_met() {
     }
 }
 
-/// Charger contention: with one charger and two overlapping sessions, the
-/// second vehicle connects only after the first departs, and is flagged
-/// never_connected if it cannot.
+/// Charger contention, reference semantics: a car that finds no vacant port
+/// at ARRIVAL is dropped permanently (never retried), even if a port frees
+/// later; lower vehicle ids win same-slot contention.
 #[test]
-fn charger_queueing_is_deterministic_and_fair() {
+fn charger_assignment_reference_semantics() {
     let v1 = vehicle(0, 0, 10);
-    let v2 = vehicle(1, 2, 30); // waits until slot 10
-    let v3 = vehicle(2, 2, 8); // departs before a charger frees: never connects
+    let v2 = vehicle(1, 2, 30); // arrives while the port is held: dropped forever
+    let v3 = vehicle(2, 2, 8); // likewise
     let scenario = base_scenario(48, vec![v1, v2, v3], vec![charger(0, false)]);
     let results = run(
         &scenario,
@@ -212,55 +280,19 @@ fn charger_queueing_is_deterministic_and_fair() {
     };
     assert!(!by_id(0).never_connected, "first vehicle must connect");
     assert!(
-        !by_id(1).never_connected,
-        "waiting vehicle must connect after departure"
+        by_id(1).never_connected,
+        "reference semantics: no retry after the port frees at slot 10"
     );
-    assert!(
-        by_id(2).never_connected,
-        "overlapping vehicle must be reported as unserved"
-    );
+    assert!(by_id(2).never_connected, "dropped at arrival");
     assert_abs_diff_eq!(
         by_id(2).soc_departure_kwh,
         by_id(2).soc_arrival_kwh,
         epsilon = 1e-12
     );
-}
-
-/// V2B effectiveness: during a DR window whose firm level is below the building
-/// load, the V2B variant strictly reduces overflow (and the bill) relative to
-/// the charge-only variant.
-#[test]
-fn v2b_reduces_dr_overflow() {
-    let build = || {
-        let mut v = vehicle(0, 0, 48);
-        v.soc_arrival_kwh = 55.0;
-        v.soc_target_kwh = 20.0;
-        let mut s = base_scenario(48, vec![v], vec![charger(0, true)]);
-        s.building_load_kw = vec![50.0; 48];
-        s.dr_events.push(dr_event(10, 20, 40.0)); // 10 kW shortfall for 10 slots
-        s
-    };
-    let edf = run(
-        &build(),
-        policy::by_name("edf").expect("edf exists").as_ref(),
-    );
-    let edf_v2b = run(
-        &build(),
-        policy::by_name("edf-v2b").expect("edf-v2b exists").as_ref(),
-    );
-    assert!(
-        edf.bill.dr_penalty_usd > 0.0,
-        "charge-only baseline must overflow"
-    );
-    assert!(
-        edf_v2b.bill.dr_penalty_usd < edf.bill.dr_penalty_usd,
-        "V2B must shave DR overflow: {} vs {}",
-        edf_v2b.bill.dr_penalty_usd,
-        edf.bill.dr_penalty_usd
-    );
-    assert!(
-        edf_v2b.bill.total_usd < edf.bill.total_usd,
-        "V2B must lower the bill here"
+    assert_eq!(
+        results.sessions.len(),
+        3,
+        "dropped sessions reported exactly once"
     );
 }
 
@@ -272,26 +304,4 @@ fn dr_window_is_left_open_right_closed() {
     assert!(e.contains(5), "first slot after start must be included");
     assert!(e.contains(8), "end slot must be included");
     assert!(!e.contains(9), "slot after end must be excluded");
-}
-
-/// Discharge budget safety: a V2B policy must never discharge energy it cannot
-/// recover before departure. The vehicle ends at (or above) its target even
-/// after serving a DR window mid-session.
-#[test]
-fn v2b_discharge_never_sacrifices_departure_target() {
-    let mut v = vehicle(0, 0, 24);
-    v.soc_arrival_kwh = 45.0;
-    v.soc_target_kwh = 40.0;
-    let mut scenario = base_scenario(48, vec![v], vec![charger(0, true)]);
-    scenario.dr_events.push(dr_event(2, 10, 30.0));
-    for name in ["edf-v2b", "llf-v2b"] {
-        let results = run(
-            &scenario,
-            policy::by_name(name).expect("registered").as_ref(),
-        );
-        assert!(
-            results.sessions[0].target_met,
-            "policy {name} discharged past the recoverable budget"
-        );
-    }
 }

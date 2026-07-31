@@ -15,10 +15,13 @@ Input (OPTIMUS persistence layout, single building):
   dso_commands.csv  optional: start/end datetimes, fsl (kW)
 
 Mapping decisions (documented, deliberate):
-  - SoC percent -> kWh via each car's capacity.
-  - OPTIMUS's max_allowed_soc ceiling becomes the openv2b battery ceiling:
-    battery_kwh = capacity * max_allowed/100 (charging can never exceed it in
-    either simulator); min_allowed becomes min_soc_kwh.
+  - SoC percent -> kWh via each car's TRUE capacity: battery_kwh = capacity;
+    OPTIMUS's max_allowed_soc becomes max_soc_kwh (the operating ceiling) and
+    min_allowed becomes min_soc_kwh. The heuristics' >90% taper anchors to
+    the true capacity, exactly like the reference.
+  - heuristic_threshold_kw carries the reference's monthly-percentile parquet
+    lookup (needs pandas; falls back to 0.8 * max building load, which is
+    also the reference's own fallback).
   - Arrival is CEILED to a slot, departure (arrival + duration) FLOORED, and
     both are clamped to the arrival's calendar day (OPTIMUS convention),
     unless --no-same-day-clamp.
@@ -58,6 +61,7 @@ def main() -> int:
     ap.add_argument("--slot-minutes", type=float, default=15.0)
     ap.add_argument("--demand-peak", type=float, default=11.67)
     ap.add_argument("--no-same-day-clamp", action="store_true")
+    ap.add_argument("--threshold-percentile", type=int, default=100)
     args = ap.parse_args()
     ep, out = args.episode_dir, args.out_dir
     slot_s = args.slot_minutes * 60.0
@@ -109,7 +113,7 @@ def main() -> int:
             [
                 "vehicle_id", "arrival_slot", "departure_slot", "battery_kwh",
                 "soc_arrival_kwh", "soc_target_kwh", "max_charge_kw",
-                "max_discharge_kw", "min_soc_kwh", "depletion_kwh",
+                "max_discharge_kw", "min_soc_kwh", "max_soc_kwh", "depletion_kwh",
             ]
         )
         port = read_rows(ep / "chargers.csv")[0]
@@ -134,12 +138,13 @@ def main() -> int:
                     int(float(s["car_id"])),
                     arr,
                     dep,
-                    round(cap * float(car["max_allowed_soc"]) / 100.0, 6),
+                    cap,
                     round(cap * float(car["soc"]) / 100.0, 6),
                     round(cap * float(s["required_soc_at_depart"]) / 100.0, 6),
                     float(hi),
                     -float(lo) if lo < 0 else 0.0,
                     round(cap * float(car["min_allowed_soc"]) / 100.0, 6),
+                    round(cap * float(car["max_allowed_soc"]) / 100.0, 6),
                     round(cap * float(s["previous_day_external_use_soc"]) / 100.0, 6),
                 ]
             )
@@ -164,8 +169,24 @@ def main() -> int:
                     w.writerow([start, min(end, horizon - 1), fsl,
                                 PENALTY_USD_PER_KWH, INCENTIVE_USD_PER_KW, fsl])
 
+    # Threshold: replicate the reference's monthly-percentile parquet lookup
+    # (bare-except fallback to 0.8 * max building load, like the reference).
+    threshold = None
+    try:
+        import pandas as pd  # noqa: WPS433 (optional dependency)
+
+        parquet = Path("data/generative_models/dr_monthly_demand_0.5.parquet")
+        df = pd.read_parquet(parquet)
+        threshold = float(
+            df.query("month == @t0.month")[f"{args.threshold_percentile}th_percentile"].iloc[0]
+        )
+    except Exception:  # noqa: BLE001 (mirrors the reference's bare except)
+        threshold = 0.8 * max(float(r["power_kw"]) for r in building)
+        print(f"threshold parquet lookup failed; fallback 0.8*max = {threshold:.4f} kW", file=sys.stderr)
+
     manifest = {
         "slot_minutes": args.slot_minutes,
+        "heuristic_threshold_kw": threshold,
         "horizon_slots": horizon,
         "charge_efficiency": 1.0,
         "discharge_efficiency": 1.0,

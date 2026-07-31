@@ -99,6 +99,7 @@ def load_scenario(d: Path):
                 "max_charge_kw": float(r["max_charge_kw"]),
                 "max_discharge_kw": float(r.get("max_discharge_kw") or 0.0),
                 "min_soc_kwh": float(r.get("min_soc_kwh") or 0.0),
+                "max_soc_kwh": float(r["max_soc_kwh"]) if r.get("max_soc_kwh") else None,
                 "depletion_kwh": float(r.get("depletion_kwh") or 0.0),
             }
             for r in read_csv(d / m.get("vehicles_file", "vehicles.csv"))
@@ -146,20 +147,45 @@ def m_manifest_demand(sc, peak: float, peak_tou: float) -> float:
 
 
 def resimulate(sc, policy_name: str):
-    """Independent re-simulation of every built-in policy (idle, uncontrolled,
-    edf, llf, edf-v2b, llf-v2b), including banking, force-charge, the V2B
-    discharge overlay, and all engine clamps."""
+    """Independent re-simulation of every built-in policy: idle, uncontrolled,
+    and the OPTIMUS ports (policy-0/1/2, edf, llf) including the threshold
+    budget walk, taper, force-charge, ratchet, and all engine clamps."""
     horizon, dt, eta_c, eta_d = sc["horizon"], sc["dt"], sc["eta_c"], sc["eta_d"]
     n = len(sc["vehicles"])
     arrival_soc = [v["soc_arrival_kwh"] for v in sc["vehicles"]]
     chain = {}
     active = {}  # row index -> {"charger": c, "soc": kwh, "drawn": kwh, "exported": kwh}
     charger_free = [True] * len(sc["chargers"])
-    waiting = []
     slots_out = []
     sessions_out = {}
+    dropped = set()
 
-    arrival_order = sorted(range(n), key=lambda i: (sc["vehicles"][i]["arrival_slot"], sc["vehicles"][i]["vehicle_id"]))
+    def ceiling(v):
+        c = v.get("max_soc_kwh")
+        return c if c is not None else v["battery_kwh"]
+
+    # EDF/LLF threshold (historical_max_load): manifest seed or the reference
+    # fallback 0.8 * max building load; ratchets monotonically upward.
+    threshold = sc["manifest"].get("heuristic_threshold_kw")
+    if threshold is None:
+        threshold = 0.8 * max(sc["building"])
+
+    def taper(v, soc_kwh, rate_kw):
+        """The reference get_rate: >90%-of-true-capacity charge taper (exact
+        comparisons), hard discharge floor, no shaping on negatives."""
+        soc = soc_kwh / v["battery_kwh"] * 100.0
+        max_soc = ceiling(v) / v["battery_kwh"] * 100.0
+        min_soc = v["min_soc_kwh"] / v["battery_kwh"] * 100.0
+        if rate_kw > 0.0:
+            if soc <= max_soc:
+                return rate_kw if soc <= 90.0 else -rate_kw / 10.0 * (soc - 90.0) + rate_kw
+            return 0.0
+        if rate_kw < 0.0:
+            return rate_kw if soc >= min_soc else 0.0
+        return 0.0
+
+    def isclose_pct(a, b):
+        return abs(a - b) <= 0.1 + 1e-5 * abs(b)
 
     def finish(i, state, never):
         v = sc["vehicles"][i]
@@ -171,8 +197,10 @@ def resimulate(sc, policy_name: str):
             "never_connected": never,
         }
 
+    arrival_rows = sorted(range(n), key=lambda i: (sc["vehicles"][i]["arrival_slot"], sc["vehicles"][i]["vehicle_id"]))
+
     for s in range(horizon):
-        # departures
+        # departures (before arrivals: same-slot chain handoffs)
         for i in range(n):
             v = sc["vehicles"][i]
             if v["departure_slot"] == s:
@@ -181,54 +209,43 @@ def resimulate(sc, policy_name: str):
                     charger_free[st["charger"]] = True
                     chain[v["vehicle_id"]] = st["soc"]
                     finish(i, st, False)
-                elif i in waiting:
-                    waiting.remove(i)
+                elif i in dropped:
+                    dropped.discard(i)
                     st = {"soc_arrival": arrival_soc[i], "soc": arrival_soc[i], "drawn": 0.0, "exported": 0.0}
                     chain[v["vehicle_id"]] = st["soc"]
                     finish(i, st, True)
-        # arrivals
-        for i in arrival_order:
+        # arrivals: persistence chain resolves here (clamped to the ceiling)
+        arrivals_now = []
+        for i in arrival_rows:
             v = sc["vehicles"][i]
             if v["arrival_slot"] == s:
                 if sc["persistence"] and v["vehicle_id"] in chain:
                     raw = chain[v["vehicle_id"]] - v["depletion_kwh"]
-                    arrival_soc[i] = min(max(raw, v["min_soc_kwh"]), v["battery_kwh"])
-                waiting.append(i)
-        # assignment (capability-aware, fallback any)
-        still = []
-        for i in waiting:
-            v = sc["vehicles"][i]
-            wants_bidi = v["max_discharge_kw"] > 0.0
-            pick = None
-            for c, free in enumerate(charger_free):
-                if free and sc["chargers"][c]["bidirectional"] == wants_bidi:
-                    pick = c
-                    break
-            if pick is None:
-                for c, free in enumerate(charger_free):
-                    if free:
-                        pick = c
-                        break
-            if pick is None:
-                still.append(i)
-            else:
-                charger_free[pick] = False
+                    arrival_soc[i] = min(max(raw, v["min_soc_kwh"]), ceiling(v))
+                arrivals_now.append(i)
+        # assignment, reference semantics: ascending vehicle id; every car
+        # prefers a bidirectional port (lowest id ties); no vacancy -> DROPPED
+        # permanently, never retried.
+        for i in sorted(arrivals_now, key=lambda i: sc["vehicles"][i]["vehicle_id"]):
+            vacant = [c for c, free in enumerate(charger_free) if free]
+            vacant.sort(key=lambda c: (not sc["chargers"][c]["bidirectional"], c))
+            if vacant:
+                c = vacant[0]
+                charger_free[c] = False
                 active[i] = {
-                    "charger": pick,
+                    "charger": c,
                     "soc_arrival": arrival_soc[i],
                     "soc": arrival_soc[i],
                     "drawn": 0.0,
                     "exported": 0.0,
                 }
-        waiting = still
+            else:
+                dropped.add(i)
 
-        # decision: mirror the policy layer exactly, in its own words.
+        # decision: mirror the ported policies exactly, in the referee's words.
         building = sc["building"][s]
         tou = sc["tou"][s]
-        fsls = [e["fsl"] for e in sc["dr_events"] if dr_covers(e, s)]
-        fsl = min(fsls) if fsls else None
         cap = sc["site_cap"]
-        eff_cap = min(x for x in [cap, fsl] if x is not None) if (cap is not None or fsl is not None) else None
 
         def limits(i):
             v = sc["vehicles"][i]
@@ -237,102 +254,143 @@ def resimulate(sc, policy_name: str):
             max_dis = min(v["max_discharge_kw"], port["max_kw"]) if port["bidirectional"] else 0.0
             return max_chg, max_dis
 
-        def laxity(i):
-            v = sc["vehicles"][i]
-            need = max(0.0, v["soc_target_kwh"] - active[i]["soc"])
-            per_slot = limits(i)[0] * dt * eta_c
-            if need <= 0.0:
-                slots_needed = 0.0
-            elif per_slot <= 0.0:
-                slots_needed = float("inf")
-            else:
-                slots_needed = need / per_slot
-            return (v["departure_slot"] - s) - slots_needed
-
-        # Canonical view order = (arrival_slot, vehicle_id).
+        # Canonical view order = (arrival_slot, vehicle_id): the emission
+        # order for the per-session policies.
         canonical = sorted(
             active, key=lambda i: (sc["vehicles"][i]["arrival_slot"], sc["vehicles"][i]["vehicle_id"])
         )
 
         requests = []  # (row, kw) in EMISSION order
-        v2b = policy_name.endswith("-v2b")
-        if policy_name == "uncontrolled":
+        if policy_name == "idle":
+            pass
+        elif policy_name == "uncontrolled":
             for i in canonical:
                 v = sc["vehicles"][i]
                 need = max(0.0, v["soc_target_kwh"] - active[i]["soc"])
                 kw = min(need / eta_c / dt, limits(i)[0]) if need > 0 else 0.0
                 requests.append((i, kw))
-        elif policy_name in ("edf", "llf", "edf-v2b", "llf-v2b"):
-            if policy_name.startswith("edf"):
-                order = sorted(
-                    active,
-                    key=lambda i: (sc["vehicles"][i]["departure_slot"], sc["vehicles"][i]["vehicle_id"]),
-                )
-            else:
-                order = sorted(active, key=lambda i: (laxity(i), sc["vehicles"][i]["vehicle_id"]))
-            headroom = max(0.0, eff_cap - building) if eff_cap is not None else None
-            for i in order:
-                st = active[i]
+        elif policy_name == "policy-0":
+            for i in canonical:
                 v = sc["vehicles"][i]
-                # V2B variants bank (charge toward capacity) off peak-price slots.
-                goal = v["battery_kwh"] if (v2b and tou != "peak") else v["soc_target_kwh"]
-                need = max(0.0, goal - st["soc"])
-                kw = min(need / eta_c / dt, limits(i)[0]) if need > 0 else 0.0
-                if headroom is not None:
-                    kw = min(kw, headroom)
-                    headroom -= kw
-                # Force-charge fallback: the service guarantee outranks the
-                # economic headroom once the target is barely reachable.
-                target_need = max(0.0, v["soc_target_kwh"] - st["soc"])
-                target_rate = min(target_need / eta_c / dt, limits(i)[0]) if target_need > 0 else 0.0
-                if kw < target_rate and laxity(i) <= 0.0:
-                    if headroom is not None:
-                        headroom = max(0.0, headroom + kw - target_rate)
-                    kw = target_rate
-                requests.append((i, kw))
-            if v2b and fsl is not None:
-                allocated = sum(kw for _, kw in requests)
-                excess = building + allocated - fsl
-                if excess > 0:
-                    amended = {i: kw for i, kw in requests}
-                    for i in reversed(order):
-                        if excess <= 0:
-                            break
-                        v = sc["vehicles"][i]
-                        st = active[i]
-                        forced = laxity(i) <= 0.0
-                        if amended[i] > 0.0 and not forced:
-                            cut = min(amended[i], excess)
-                            amended[i] -= cut
-                            excess -= cut
-                            if excess <= 0:
-                                break
-                        max_dis = limits(i)[1]
-                        if max_dis <= 0.0:
-                            continue
-                        reserved = max(v["soc_target_kwh"], v["min_soc_kwh"])
-                        budget_building_kwh = max(0.0, st["soc"] - reserved) * eta_d
-                        p_dis = max(0.0, min(max_dis, budget_building_kwh / dt, excess))
-                        if p_dis > 0.0:
-                            amended[i] = -p_dis
-                            excess -= p_dis
-                    requests = [(i, amended[i]) for i in order]
-        elif policy_name == "idle":
-            pass
+                st = active[i]
+                soc = st["soc"] / v["battery_kwh"] * 100.0
+                req = v["soc_target_kwh"] / v["battery_kwh"] * 100.0
+                rate = 0.0
+                if soc < req and not isclose_pct(soc, req):
+                    hours = (v["departure_slot"] - s) * dt
+                    rate = (v["soc_target_kwh"] - st["soc"]) / hours
+                    rate = min(rate, limits(i)[0])
+                    rate = max(rate, 0.0)
+                    rate = taper(v, st["soc"], rate)
+                requests.append((i, rate))
+        elif policy_name in ("policy-1", "policy-2"):
+            for i in canonical:
+                v = sc["vehicles"][i]
+                st = active[i]
+                soc = st["soc"] / v["battery_kwh"] * 100.0
+                mx = ceiling(v) / v["battery_kwh"] * 100.0
+                if soc < mx and not isclose_pct(soc, mx):
+                    charge_ok = (
+                        tou in ("off-peak", "super-off-peak")
+                        if policy_name == "policy-1"
+                        else tou == "off-peak"
+                    )
+                    rate = taper(v, st["soc"], limits(i)[0]) if charge_ok else 0.0
+                    requests.append((i, rate))
+            if policy_name == "policy-1":
+                for i in canonical:
+                    v = sc["vehicles"][i]
+                    st = active[i]
+                    soc = st["soc"] / v["battery_kwh"] * 100.0
+                    req = v["soc_target_kwh"] / v["battery_kwh"] * 100.0
+                    if soc > req and not isclose_pct(soc, req):
+                        rate = taper(v, st["soc"], -limits(i)[1]) if tou == "peak" else 0.0
+                        # second loop overwrites the first (last-wins dedup)
+                        requests.append((i, rate))
+        elif policy_name in ("edf", "llf"):
+            # Eligibility: STRICT (no tolerance). Peak: below target; else
+            # below ceiling.
+            elig = []
+            for i in canonical:
+                v = sc["vehicles"][i]
+                st = active[i]
+                bound = v["soc_target_kwh"] if tou == "peak" else ceiling(v)
+                if st["soc"] < bound:
+                    elig.append(i)
+            rows = []
+            for i in elig:
+                v = sc["vehicles"][i]
+                st = active[i]
+                need = v["soc_target_kwh"] - st["soc"]  # SIGNED
+                tl = (v["departure_slot"] - s) * dt * 3600.0
+                min_rate = need / (tl / 3600.0)
+                if min_rate in (float("inf"), float("-inf")):
+                    min_rate = 0.0
+                if policy_name == "edf":
+                    # IEEE division like the engine/numpy: x/0 -> +/-inf, 0/0 -> NaN.
+                    num = 100.0 * need * limits(i)[0]
+                    den = (threshold - building) * tl
+                    if den == 0.0:
+                        key = float("nan") if num == 0.0 else math.copysign(float("inf"), num)
+                    else:
+                        key = num / den
+                else:
+                    key = tl
+                rows.append((i, min_rate, tl, key))
+            reverse = policy_name == "edf"
+            rows.sort(key=lambda r: (r[3] != r[3], -r[3] if reverse else r[3], sc["vehicles"][r[0]]["vehicle_id"]))
+            capacity = threshold - building
+            used_power = 0.0
+            served = set()
+            for i, min_rate, tl, _ in rows:
+                if capacity <= 0.0:
+                    break
+                v = sc["vehicles"][i]
+                st = active[i]
+                rate = min_rate
+                original = rate
+                if used_power + rate > capacity:
+                    rate = min(rate, capacity)
+                rate = min(rate, limits(i)[0])
+                rate = taper(v, st["soc"], rate)
+                requests.append((i, rate))
+                if rate >= original:
+                    served.add(v["vehicle_id"])
+                used_power += rate
+                capacity -= rate
+            for i, min_rate, tl, _ in rows:
+                v = sc["vehicles"][i]
+                if tl < 3600.0 and v["vehicle_id"] not in served:
+                    st = active[i]
+                    rate = min(min_rate, limits(i)[0]) if min_rate > 0 else max(min_rate, -limits(i)[1])
+                    rate = taper(v, st["soc"], rate)
+                    requests.append((i, rate))  # last-wins overwrite
+                    used_power += rate
+            if building + used_power > threshold:
+                threshold = building + used_power
         else:
             raise ValueError(policy_name)
 
-        # Integration with engine-side clamps, charge pass first then
-        # discharge pass, both in emission order.
+        # Integration with engine-side clamps: last-wins dedup, charge pass
+        # first (site-cap headroom, ceiling room), then discharge pass
+        # (no-export headroom, floor).
+        deduped = {}
+        order_seq = []
+        for i, kw in requests:
+            if i in deduped:
+                order_seq.remove(i)
+            deduped[i] = kw
+            order_seq.append(i)
         charge_headroom = float("inf") if cap is None else max(0.0, cap - building)
         total_charge = 0.0
-        for i, kw in requests:
+        for i in order_seq:
+            kw = deduped[i]
             if kw < 0.0:
                 continue
             st = active[i]
             v = sc["vehicles"][i]
             p = min(kw, limits(i)[0], charge_headroom)
-            room = v["battery_kwh"] - st["soc"]
+            room = ceiling(v) - st["soc"]
             p = max(0.0, min(p, (room / eta_c) / dt))
             grid_kwh = p * dt
             st["soc"] += grid_kwh * eta_c
@@ -341,7 +399,8 @@ def resimulate(sc, policy_name: str):
             charge_headroom -= p
         export_headroom = building + total_charge
         total_discharge = 0.0
-        for i, kw in requests:
+        for i in order_seq:
+            kw = deduped[i]
             if kw >= 0.0:
                 continue
             st = active[i]
@@ -366,7 +425,7 @@ def resimulate(sc, policy_name: str):
 
     for i in list(active):
         finish(i, active.pop(i), False)
-    for i in waiting:
+    for i in list(dropped):
         st = {"soc_arrival": arrival_soc[i], "soc": arrival_soc[i], "drawn": 0.0, "exported": 0.0}
         finish(i, st, True)
     return slots_out, sessions_out
@@ -463,7 +522,8 @@ def main() -> int:
             for (_, prev), (arr_slot, cur) in zip(sess, sess[1:]):
                 v = vrows[(vid, arr_slot)]
                 raw = float(prev["soc_departure_kwh"]) - v["depletion_kwh"]
-                expected = min(max(raw, v["min_soc_kwh"]), v["battery_kwh"])
+                cei = v["max_soc_kwh"] if v.get("max_soc_kwh") is not None else v["battery_kwh"]
+                expected = min(max(raw, v["min_soc_kwh"]), cei)
                 check(
                     "M8-chain",
                     close(float(cur["soc_arrival_kwh"]), expected),
@@ -512,13 +572,9 @@ def main() -> int:
             # policies (mpc) legitimately borrow below the target mid-session
             # and recover via their reachability constraint; for them the
             # floor and the target-met checks (M3/M5) are the guarantees.
-            if policy in ("edf-v2b", "llf-v2b"):
-                reserved = max(v["soc_target_kwh"], v["min_soc_kwh"])
-                check(
-                    "V2B-surplus-only",
-                    float(t["soc_kwh"]) >= reserved - ABS_TOL,
-                    f"vehicle {t['vehicle_id']} slot {s}: soc {t['soc_kwh']} < reserved {reserved}",
-                )
+            # (the deleted V2B-overlay heuristics carried a surplus-only
+            # contract; the OPTIMUS ports discharge via metered channels and
+            # are bound by the floor + resim equality instead)
             check(
                 "V2B-floor",
                 float(t["soc_kwh"]) >= v["min_soc_kwh"] - ABS_TOL,
@@ -531,7 +587,7 @@ def main() -> int:
         check("trace-agg-discharge", close(agg_discharge[s], float(r["ev_discharge_kw"])), f"slot {s}")
 
     # Independent trajectory re-simulation for EVERY built-in policy.
-    if policy in ("idle", "uncontrolled", "edf", "llf", "edf-v2b", "llf-v2b"):
+    if policy in ("idle", "uncontrolled", "policy-0", "policy-1", "policy-2", "edf", "llf"):
         my_slots, my_sessions = resimulate(sc, policy)
         for s, (mine, theirs) in enumerate(zip(my_slots, slots)):
             check(

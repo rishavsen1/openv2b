@@ -3,7 +3,8 @@
 
 mod common;
 
-use common::{base_scenario, charger, dr_event, manifest, vehicle};
+use approx::assert_abs_diff_eq;
+use common::{base_scenario, charger, manifest, vehicle};
 use openv2b::engine::run;
 use openv2b::policy::{self, Policy, POLICY_NAMES};
 use openv2b::scenario::{Scenario, TouClass};
@@ -69,56 +70,21 @@ fn row_permutation_invariance_under_binding_cap() {
         s
     };
     for name in POLICY_NAMES {
-        let pol = policy::by_name(name).expect("registered");
-        let a = run(&mk(&[7, 9]), pol.as_ref());
-        let b = run(&mk(&[9, 7]), pol.as_ref());
+        // Fresh instance per run: the EDF/LLF ratchet is per-episode state.
+        let a = run(
+            &mk(&[7, 9]),
+            policy::by_name(name).expect("registered").as_ref(),
+        );
+        let b = run(
+            &mk(&[9, 7]),
+            policy::by_name(name).expect("registered").as_ref(),
+        );
         assert_eq!(
             serde_json::to_string(&a.sessions).expect("serialize"),
             serde_json::to_string(&b.sessions).expect("serialize"),
             "policy {name}: row order changed outcomes under a binding cap"
         );
     }
-}
-
-/// F6: a trivially feasible target inside a DR window is met by every
-/// built-in policy (force-charge fallback): the firm level yields to the
-/// service guarantee, at the cost of a window penalty.
-#[test]
-fn feasible_target_met_even_when_building_exceeds_firm_level() {
-    let build = || {
-        let mut v = vehicle(0, 0, 8);
-        v.soc_arrival_kwh = 20.0;
-        v.soc_target_kwh = 40.0; // 1 h at 20 kW, 2 h available
-        let mut s = base_scenario(8, vec![v], vec![charger(0, true)]);
-        s.building_load_kw = vec![50.0; 8];
-        s.dr_events.push(dr_event(0, 7, 40.0)); // building alone violates F
-        s
-    };
-    for name in ["uncontrolled", "edf", "llf", "edf-v2b", "llf-v2b"] {
-        let r = run(
-            &build(),
-            policy::by_name(name).expect("registered").as_ref(),
-        );
-        assert!(
-            r.sessions[0].target_met,
-            "{name}: missed a trivially feasible target inside a DR window (SoC {})",
-            r.sessions[0].soc_departure_kwh
-        );
-    }
-    // The priority policies pay for it: the forced charging shows up as
-    // window penalty beyond the building's own overflow.
-    let edf = run(
-        &build(),
-        policy::by_name("edf").expect("registered").as_ref(),
-    );
-    let idle = run(
-        &build(),
-        policy::by_name("idle").expect("registered").as_ref(),
-    );
-    assert!(
-        edf.bill.dr_penalty_usd > idle.bill.dr_penalty_usd,
-        "force-charge must show up as extra window penalty"
-    );
 }
 
 /// F5: non-finite inputs are rejected at validation, never repaired into a
@@ -168,31 +134,24 @@ fn range_and_uniqueness_validation() {
     );
 }
 
-/// F8 follow-through: V2B banking. Outside peak-price slots the V2B variants
-/// charge above the target, so a chained donor regains its surplus daily
-/// instead of running dry after the first window.
+/// Reference force-charge: with the budget dead (threshold fallback 0.8*max
+/// building sits below the load), nothing charges until the final hour, then
+/// the metered force-charge lands the car exactly on a small target.
 #[test]
-fn v2b_banking_replenishes_the_donor() {
-    // Two days; a window each day; donor present both days.
-    let mk_day = |day: usize| {
-        let mut v = vehicle(2, day * 96 + 40, day * 96 + 80);
-        v.battery_kwh = 100.0;
-        v.soc_arrival_kwh = 90.0; // only meaningful on day 0
-        v.soc_target_kwh = 40.0;
-        v.min_soc_kwh = 10.0;
-        v.depletion_kwh = 5.0;
-        v
-    };
-    let mut s = base_scenario(192, vec![mk_day(0), mk_day(1)], vec![charger(0, true)]);
-    s.building_load_kw = vec![50.0; 192];
-    s.dr_events.push(dr_event(60, 70, 40.0));
-    s.dr_events.push(dr_event(96 + 60, 96 + 70, 40.0));
-    let r = run(&s, policy::by_name("edf-v2b").expect("registered").as_ref());
-    let day2 = &r.sessions[1];
-    assert!(
-        day2.energy_exported_kwh > 0.0,
-        "banked donor must still discharge on day 2 (exported {})",
-        day2.energy_exported_kwh
-    );
-    assert!(r.bill.dr_penalty_usd < 1e-6, "both windows fully covered");
+fn force_charge_serves_within_final_hour_despite_dead_budget() {
+    for name in ["edf", "llf"] {
+        let mut v = vehicle(0, 0, 8);
+        v.soc_arrival_kwh = 35.0;
+        v.soc_target_kwh = 40.0; // 5 kWh: coverable by the 3-slot force window
+        let mut s = base_scenario(8, vec![v], vec![charger(0, true)]);
+        s.building_load_kw = vec![50.0; 8]; // fallback threshold = 40 < 50
+        let r = run(&s, policy::by_name(name).expect("registered").as_ref());
+        let early: f64 = r.slots[..5].iter().map(|x| x.ev_charge_kw).sum();
+        assert_abs_diff_eq!(early, 0.0, epsilon = 1e-9);
+        assert!(
+            r.sessions[0].target_met,
+            "{name}: force-charge must land the target"
+        );
+        assert_abs_diff_eq!(r.sessions[0].soc_departure_kwh, 40.0, epsilon = 1e-9);
+    }
 }

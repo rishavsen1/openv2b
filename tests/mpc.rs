@@ -103,7 +103,7 @@ mod with_highs {
             "MPC should fully cover the 10 kW shortfall: penalty {}",
             m.bill.dr_penalty_usd
         );
-        let edf = run(&s, policy::by_name("edf-v2b").expect("registered").as_ref());
+        let edf = run(&s, policy::by_name("edf").expect("registered").as_ref());
         assert!(
             m.bill.total_usd <= edf.bill.total_usd + 1e-9,
             "MPC at least as good as heuristic"

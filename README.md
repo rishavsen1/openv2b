@@ -46,8 +46,9 @@ asymmetric efficiencies), per-slot power and per-session energies agree to **max
 v0.2-alpha. Functional and tested: the core engine (engine-enforced physics: power caps, SoC
 floor/ceiling, site cap, no-export guard, adversarial-policy safety), session persistence with
 cross-day SoC chaining and banking, TOU tariffs with two-component demand charges, DR/FSL
-settlement, heuristic policies (idle, uncontrolled, EDF, LLF, and V2B variants with banking and
-a provably target-safe discharge budget), and a receding-horizon **MPC** over a solver-agnostic
+settlement, heuristic policies faithfully ported from the reference simulator
+(policy-0/1/2 and the threshold-budget EDF/LLF; see docs/OPTIMUS_PORT.md, with bill parity
+attributed to the cent), and a receding-horizon **MPC** over a solver-agnostic
 LP/MILP layer (in-process HiGHS via `--features solver-highs`; a dependency-free LP-file + CLI
 backend drives CPLEX/Gurobi/Xpress/any solver, verified bill-identical against CPLEX 22.1).
 A month-scale simulation solves in ~2 s including 2880 MPC re-solves.
