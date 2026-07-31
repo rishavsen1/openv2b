@@ -34,6 +34,13 @@ jobs:
           cargo build --release
           ./target/release/openv2b --scenario examples/one_day --policy policy-1 --out /tmp/ref_day
           python3 tools/referee.py examples/one_day /tmp/ref_day
+      - name: Converter round-trip (reference format -> scenario -> referee)
+        run: |
+          python3 tools/convert_optimus.py examples/optimus_format_mini /tmp/mini_conv
+          for p in policy-0 policy-1 edf llf uncontrolled; do
+            ./target/release/openv2b --scenario /tmp/mini_conv --policy $p --out /tmp/mini_$p
+            python3 tools/referee.py /tmp/mini_conv /tmp/mini_$p
+          done
       - name: Referee (one_month, uncontrolled resim + lossy llf)
         run: |
           cargo run --release --bin gen_month

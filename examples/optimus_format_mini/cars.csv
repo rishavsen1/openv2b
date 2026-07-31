@@ -1,0 +1,3 @@
+index,car_id,capacity_kwh,soc,min_allowed_soc,max_allowed_soc,building_id,frequency,user_type
+0,0,60,40,10.0,90.0,0,0.0,1
+1,1,80,55,10.0,90.0,0,0.0,1

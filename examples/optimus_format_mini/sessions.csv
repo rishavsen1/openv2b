@@ -1,0 +1,4 @@
+Unnamed: 0,car_id,arrival,required_soc_at_depart,previous_day_external_use_soc,duration,session_id,building_id
+0,0,2026-01-01 08:00:00,70.0,0.0,28800.0,0,0
+1,1,2026-01-01 09:00:00,65.0,0.0,21600.0,0,0
+2,0,2026-01-02 08:00:00,75.0,15.0,28800.0,1,0

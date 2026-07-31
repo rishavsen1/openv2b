@@ -1,0 +1,3 @@
+Unnamed: 0,charger_id,directionality,charge_rates_kw,building_id
+0,0,bidirectional,"(-15.0, 15.0)",0
+1,1,unidirectional,"(0.0, 11.0)",0
