@@ -53,25 +53,70 @@ dataset the deterministic openv2b MPC ($3796.08/$3754.95/$3762.01) matches OPTIM
 MPC about as well as our scenario version does; arrival uncertainty is worth roughly nothing
 here, so scenario count is a runtime cost without a bill benefit on RISHAV_WEEK.
 
-## Matched-scenario-order experiment (uncertainty elimination)
+## Eliminating every controllable source of difference (MPC)
 
-To eliminate scenario-set differences entirely, openv2b was re-run with OPTIMUS's exact
-seed-42 episode permutation (51, 54, 52, 50, 53) plus two control orderings:
+Three controlled experiments were run to remove, one at a time, each suspected source of
+uncertainty between the two MPCs. All use the SAME five training episodes (50-54 of
+RISHAV_15_USERS_2024, converted) and the reference's own seed-42 ordering (51, 54, 52, 50, 53).
 
-| ep | order A (50..54) | order B (OPTIMUS's) | order C (53,50,52,54,51) | OPTIMUS |
+**(i) Scenario ordering.** Orders A (50..54), B (the reference's), C (53,50,52,54,51) were run.
+Since non-anticipativity ties every scenario's first-slot rates, ordering can only act through
+degenerate-optimum selection; the measured band was up to $59 on ep3. The reference's own
+vertex choice is equally unpinned.
+
+**(ii) Ramp `q_delta`.** Both simulators were re-run with the ramp effectively disabled
+(reference: `configure.q_delta = 1e6`, verified reaching the emitted constraint RHS; openv2b:
+`ramp_kwh_per_slot = None`).
+
+| ep | reference ramped | reference no-ramp | openv2b ramped | openv2b no-ramp |
 |---|---|---|---|---|
-| 1 | 3796.95 | 3796.95 | - | 3795.36 |
-| 2 | 3798.55 | 3797.79 | 3795.91 | 3773.39 |
-| 3 | 3763.33 | 3822.65 | 3763.33 | 3761.93 |
+| 1 | 3795.36 | 3794.94 | 3796.95 | 3796.24 |
+| 2 | 3773.39 | 3920.11 | 3797.79 | 3989.91 |
+| 3 | 3761.93 | 3760.43 | 3822.65 | 3762.18 |
 
-Two conclusions. First, with non-anticipativity tying every scenario's first-slot rates,
-ordering can influence results only through DEGENERATE-OPTIMUM selection inside the solver;
-ep3's $59 spread across orderings measures that band, and the reference's own results carry
-the same class of arbitrariness (its LP vertex choice is equally unpinned). At favorable
-vertices ep1/ep3 sit within ~$1.5 of the reference: the billing-fencepost level. Second, ep2
-retains a small SYSTEMATIC difference robust to ordering: the reference shaves its weekly peak
-to 138.0 kW where openv2b reaches ~139.8-140.0 (~2 kW, ~$23, 0.6% of the bill), plausibly a
-by-product of the reference controller's much heavier planned churn (880/600 kWh cycled per
-week vs our far lower). Pinning it further would require imposing a shared tie-breaking rule
-on both solvers, which the reference itself does not have; recorded as a known, bounded
-difference rather than hidden in a tolerance.
+The ramp is NOT the source of the difference: removing it moves eps 1/3 by under $2 in both
+simulators and makes ep2 dramatically worse in BOTH (+$147 reference, +$192 openv2b). That
+shared, same-signed sensitivity is itself evidence of structural equivalence: the 5 kW ramp is
+nearly free under perfect foresight (oracle: <$0.30) but load-bearing for a receding-horizon
+controller, which without it cycles harder and sets a higher realized peak.
+
+**(iii) The forecast model itself.** A source-level audit of the reference's scenario
+construction found ONE genuine mismatch: each of its scenarios plans against **that training
+episode's own building-load series**, i.e. the building load is FORECAST, not known. openv2b
+originally gave every scenario the realized (test) series. `ScenarioMpcConfig::
+building_from_futures` now implements the reference behavior and defaults to it:
+
+| ep | reference | openv2b, sampled load (reference-faithful) | openv2b, known load |
+|---|---|---|---|
+| 1 | 3795.36 | 3796.93 | 3796.95 |
+| 2 | 3773.39 | 3840.76 | 3797.79 |
+| 3 | 3761.93 | 4000.38 | 3822.65 |
+
+Also confirmed identical between the two: 5 unnormalized (equally weighted, no 1/K) scenarios;
+future sessions taken wholesale from each training episode (not filtered to tracked
+identities, no per-identity resampling in this mode); connected sessions replicated per
+scenario and tied only at slot 0; scenario 0's slot 0 committed; const-7 chaining of returning
+identities. Difference noted but benign on this data: the reference passes every scenario the
+LAST training episode's price/charger tables (a leaked loop variable), harmless because all
+RISHAV SEP2024 episodes share tariffs.
+
+## What the residual actually is
+
+After (i)-(iii), ep1 agrees to **$1.57** (and to **$0.88** in the ramp-free configuration,
+which is exactly the oracle's residual on the same episode, i.e. the final-slot billing
+fencepost F-A and nothing else). Eps 2-3 differ by more, and the mechanism is now identified:
+both controllers commit one slot per re-solve over ~700 sequential LPs whose optima are
+massively degenerate (many equal-cost plans differ only in WHICH slots carry the charging).
+Each commitment changes the state the next solve sees, so vertex choice compounds into a
+different realized peak, and the entire ep2/ep3 difference is a 2-20 kW peak, which the
+$11.67/kW demand charge multiplies into the visible dollars. Evidence that this is
+degeneracy and not a modeling error: the differences are non-monotone under every knob (ramp
+off helps ep3 and hurts ep2; sampled load helps nothing on ep2/ep3 but is the reference's own
+behavior; ordering alone moves ep3 by $59), whereas a formulation discrepancy would push
+consistently in one direction.
+
+Closing the last dollars would require both solvers to share a tie-breaking rule among equal-
+cost vertices, which the reference does not define (it pins neither CPLEX threads nor seed on
+the oracle path, and its `workmem` is a fraction of host RAM, so its own results are not
+bit-reproducible across machines). Recorded as a bounded, explained difference rather than
+hidden in a tolerance.

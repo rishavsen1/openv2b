@@ -3,7 +3,12 @@
 //!
 //! - K scenarios = K historical episodes ("episodes" SAA source): each
 //!   contributes its own FUTURE sessions (arrivals after the current slot,
-//!   inside the horizon) while the currently-connected sessions are shared.
+//!   inside the horizon) AND its own building-load series, while the
+//!   currently-connected sessions are shared. Sampling the building load is
+//!   reference behavior: the controller does not assume it knows tomorrow's
+//!   load, only that it looks like a historical day. Set
+//!   `building_from_futures = false` to plan against the realized series
+//!   instead (perfect building foresight; a diagnostic, not the reference).
 //! - Horizon sawtooth: plan through the END OF THE NEXT DAY (1.0-2.0 days),
 //!   never a fixed window.
 //! - The objective is the UNNORMALIZED sum over scenarios (K x the mean),
@@ -42,6 +47,10 @@ pub struct ScenarioMpcConfig {
     /// lower bound that ratchets upward (its `p_max_hist`). Disable to let
     /// every solve price the full peak (diagnostic / non-reference mode).
     pub use_peak_history: bool,
+    /// Reference behavior: each scenario plans against ITS OWN episode's
+    /// building-load series (the load is forecast, not known). False plans
+    /// every scenario against the realized series (perfect foresight).
+    pub building_from_futures: bool,
 }
 
 impl ScenarioMpcConfig {
@@ -53,6 +62,7 @@ impl ScenarioMpcConfig {
             degradation_usd_per_kwh: 0.05,
             slots_per_day: 96,
             use_peak_history: true,
+            building_from_futures: true,
         }
     }
 }
@@ -284,7 +294,18 @@ impl Policy for ScenarioMpc {
                 obs.demand_charge_usd_per_kw,
             );
             for s in now..horizon_end {
-                let building = obs.building_series[s];
+                // Reference: scenario k prices its own episode's load; the
+                // CURRENT slot always uses the realized value (it is
+                // observed, not forecast).
+                let building = if self.config.building_from_futures && s > now {
+                    self.config
+                        .futures
+                        .get(k)
+                        .and_then(|f| f.building_load_kw.get(s).copied())
+                        .unwrap_or(obs.building_series[s])
+                } else {
+                    obs.building_series[s]
+                };
                 let ub = obs.site_cap_kw.map_or(f64::INFINITY, |c| c.max(building));
                 let a = m.add_var(format!("agg_k{k}_{s}"), 0.0, ub, 0.0);
                 let mut terms = vec![(a, 1.0)];
