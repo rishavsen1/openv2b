@@ -111,21 +111,17 @@ ACN-Data importer, negotiation v2, ep2 scenario-MPC +$25 (scenario-index noise, 
 
 ## Active work (update me)
 
-- Nothing in flight. Next candidates: publish acnportal-v2b (needs a GitHub repo from Rishav)
-  + its X5 billing parity; config-file surface ([policy] section) so scenario-mpc futures and
-  thresholds are input-reproducible; multi-building; scenario-MPC seed-permutation match for
-  the ep2 residual.
+See `docs/HANDOFF.md` for the full state and the three INDEPENDENT threads (do not conflate
+them): A = fold the ACN-Sim plugin into `xval/` via a setpoint-replay translation layer
+(`docs/XVAL_FOLD_PLAN.md`, PR0 trace fields then PR1); B = the remaining scenario-MPC vs
+reference divergence (next step: dump the full per-scenario session list and the emitted
+constraint rows at ep1 slot 120 and diff); C = a better past-only building forecast than daily
+persistence (`Observation::building_forecast_kw`).
 
-## Scenario-MPC semantics (src/policy/scenario_mpc.rs)
-
-Matched to the reference ILP-MPC: K unnormalized scenarios (episodes source), sawtooth horizon
-(end of NEXT day), non-anticipativity ties connected sessions' first-slot rates to scenario 0
-(paired by view index, NOT position: futures interleave in the per-scenario sort), p_max_hist
-ratchet updated only on peak-TOU committed slots, ramp 1.25 kWh/slot, deg 0.05, shortfall 1e6
-via the reachability terminal. CRITICAL: sampled future sessions of tracked identities are
-CHAINED to the connected session's terminal energy (const-7); breaking that chain inflates
-planned peaks catastrophically (measured $98-375/week). CLI: --policy scenario-mpc --futures
-dir1,dir2,... (converted episodes; training pool must be disjoint from the test episode).
+Policy inventory note: `oracle` IS the separate full-horizon MILP and is the only policy with
+perfect foresight (hard rule 0). `mpc` is receding-horizon and forecast-based; it keeps its
+name. Unaudited exception: `negotiation` prices menus with `solve_oracle`, so menu pricing
+sees the realized building load (`src/negotiation.rs:172`).
 
 ## Clarified gaps vs OPTIMUS (2026-07-30 review with Rishav)
 
