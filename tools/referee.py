@@ -11,6 +11,22 @@ re-simulates the full trajectory from scratch and requires slot-exact
 agreement. For the V2B policies it enforces bound properties (discharge only
 from surplus above max(target, floor), checked per trace row).
 
+Policy-agnostic checks (they hold for the optimizing policies too, which are
+otherwise only bound-checked): per-DR-event settlement against the peak inside
+that event's window, per-session reconciliation of the metered energies and
+the departure SoC against that session's OWN trace rows, and an optional
+planner ramp bound.
+
+THE RAMP BOUND IS OPT-IN, via the manifest field `planner_ramp_kwh_per_slot`
+(kWh per slot; divided by the slot length to get kW). Declare it ONLY for a
+run whose applied trajectory came from a SINGLE ramp-limited plan (a
+solve-once plan replayed through the engine). The heuristics have no ramp at
+all, and a RECEDING controller escapes the bound by construction: its
+consecutive committed slots come from two different solves and are tied only
+*within* each plan (measured on `scenario-mpc`: 15 kW slot-to-slot swings
+under a 1.25 kWh/slot = 5 kW ramp). Setting the field for such a run is a
+declaration error, and the referee will say so loudly.
+
 Exit code 0 = all checks pass; 1 = at least one FAIL (details on stdout).
 """
 
@@ -494,6 +510,52 @@ def main() -> int:
     check("M24-incentive", close(incentive, b["dr_incentive_usd"]), f"{incentive} vs {b['dr_incentive_usd']}")
     check("M25-total", close(total, b["total_usd"]), f"{total} vs {b['total_usd']}")
     check("peak-tou-le-peak", peak_tou <= peak + ABS_TOL)
+    check("M20-peak-is-attained", any(close(float(r["net_kw"]), peak) for r in slots))
+
+    # Per-DR-event settlement, policy-agnostic: the peak net load INSIDE each
+    # window decides whether that window overflowed at all, so it must agree
+    # with the reported per-event overflow, penalty, and honored/not-honored
+    # incentive. (The aggregate M23/M24 totals can hide two events whose
+    # errors cancel.)
+    settlements = b.get("dr_settlements", [])
+    check(
+        "dr-settlement-count",
+        len(settlements) == len(sc["dr_events"]),
+        f"{len(settlements)} settlements vs {len(sc['dr_events'])} events",
+    )
+    for e, st in zip(sc["dr_events"], settlements):
+        window = f"({e['start']}, {e['end']}]"
+        check("dr-window-echo", st["start_slot"] == e["start"] and st["end_slot"] == e["end"], window)
+        check("dr-window-fsl-echo", close(float(st["fsl_kw"]), e["fsl"]), window)
+        covered = [float(r["net_kw"]) for r in slots if dr_covers(e, int(r["slot"]))]
+        window_peak = max(covered) if covered else 0.0
+        overflow = sum(max(x - e["fsl"], 0.0) * dt for x in covered)
+        honored = bool(covered) and overflow <= 1e-9
+        check("dr-window-covered", len(covered) == e["end"] - e["start"], window)
+        check("dr-window-peak-le-peak", window_peak <= peak + ABS_TOL, f"{window}: {window_peak} > {peak}")
+        check(
+            "dr-window-peak-vs-overflow",
+            (window_peak > e["fsl"] + ABS_TOL) == (overflow > 1e-9),
+            f"{window}: peak-in-window {window_peak} vs fsl {e['fsl']}, overflow {overflow}",
+        )
+        check(
+            "dr-window-overflow",
+            close(overflow, float(st["overflow_kwh"])),
+            f"{window}: {overflow} vs {st['overflow_kwh']}",
+        )
+        check(
+            "dr-window-penalty",
+            close(e["penalty_rate"] * overflow, float(st["penalty_usd"])),
+            f"{window}: {e['penalty_rate'] * overflow} vs {st['penalty_usd']}",
+        )
+        expected_incentive = (
+            e["incentive_rate"] * max(e["baseline"] - e["fsl"], 0.0) if honored else 0.0
+        )
+        check(
+            "dr-window-incentive",
+            close(expected_incentive, float(st["incentive_usd"])),
+            f"{window}: {expected_incentive} vs {st['incentive_usd']}",
+        )
 
     # M1-M8: per-session checks.
     vrows = {(v["vehicle_id"], v["arrival_slot"]): v for v in sc["vehicles"]}
@@ -556,12 +618,21 @@ def main() -> int:
     seen = set()
     agg_charge = [0.0] * horizon
     agg_discharge = [0.0] * horizon
+    # (vehicle_id, arrival_slot) -> the session's own trace rows and energies.
+    per_session = {}
     for t in trace:
         s, cid = int(t["slot"]), int(t["charger_id"])
         p = float(t["power_kw"])
         key = (s, cid)
         check("P6-exclusivity", key not in seen, f"charger {cid} slot {s}")
         seen.add(key)
+        sess_key = (int(t["vehicle_id"]), int(t["arrival_slot"]))
+        ps = per_session.setdefault(sess_key, {"drawn": 0.0, "exported": 0.0, "rows": []})
+        if p >= 0:
+            ps["drawn"] += p * dt
+        else:
+            ps["exported"] += -p * dt
+        ps["rows"].append((s, p, float(t["soc_kwh"])))
         check("per-port-cap", abs(p) <= chargers[cid]["max_kw"] + ABS_TOL, f"charger {cid} slot {s}")
         if p >= 0:
             agg_charge[s] += p
@@ -585,6 +656,68 @@ def main() -> int:
         s = int(r["slot"])
         check("trace-agg-charge", close(agg_charge[s], float(r["ev_charge_kw"])), f"slot {s}")
         check("trace-agg-discharge", close(agg_discharge[s], float(r["ev_discharge_kw"])), f"slot {s}")
+
+    # PER-SESSION trace reconciliation (policy-agnostic). The aggregate
+    # balance P21 sums over sessions, so one session over-reporting what
+    # another under-reports cancels; these tie EACH session's reported
+    # energies, occupancy window, and departure SoC to its OWN trace rows.
+    for r in sessions:
+        key = (int(r["vehicle_id"]), int(r["arrival_slot"]))
+        v = vrows[key]
+        ps = per_session.get(key)
+        if ps is None:
+            check(
+                "trace-session-rows",
+                r["never_connected"] == "true"
+                and close(float(r["energy_drawn_kwh"]), 0.0)
+                and close(float(r["energy_exported_kwh"]), 0.0),
+                f"{key}: no trace rows but the session drew or exported energy",
+            )
+            continue
+        rows = sorted(ps["rows"])
+        check(
+            "trace-session-drawn",
+            close(ps["drawn"], float(r["energy_drawn_kwh"])),
+            f"{key}: trace {ps['drawn']} vs session {r['energy_drawn_kwh']}",
+        )
+        check(
+            "trace-session-exported",
+            close(ps["exported"], float(r["energy_exported_kwh"])),
+            f"{key}: trace {ps['exported']} vs session {r['energy_exported_kwh']}",
+        )
+        check(
+            "trace-session-final-soc",
+            close(rows[-1][2], float(r["soc_departure_kwh"])),
+            f"{key}: last trace SoC {rows[-1][2]} vs departure {r['soc_departure_kwh']}",
+        )
+        expected_slots = list(range(v["arrival_slot"], min(v["departure_slot"], horizon)))
+        check(
+            "trace-session-window",
+            [x[0] for x in rows] == expected_slots,
+            f"{key}: traced slots {[x[0] for x in rows][:4]}... vs occupancy {expected_slots[:4]}...",
+        )
+        # The trace's own SoC recursion, independent of the session row.
+        soc = float(r["soc_arrival_kwh"])
+        for s, p, soc_end in rows:
+            soc += (p * dt * eta_c) if p >= 0 else (p * dt / eta_d)
+            check("trace-session-soc-recursion", close(soc, soc_end), f"{key} slot {s}")
+
+    # Ramp bound: OPT-IN via the manifest (see the module docstring). The
+    # heuristics have no ramp, and a receding controller's committed slots are
+    # tied only within one plan, so this is never assumed.
+    ramp_kwh_per_slot = sc["manifest"].get("planner_ramp_kwh_per_slot")
+    if ramp_kwh_per_slot is not None:
+        limit_kw = float(ramp_kwh_per_slot) / dt
+        for key in sorted(per_session):
+            rows = sorted(per_session[key]["rows"])
+            for (s0, p0, _), (s1, p1, _) in zip(rows, rows[1:]):
+                if s1 != s0 + 1:
+                    continue
+                check(
+                    "ramp-bound",
+                    abs(p1 - p0) <= limit_kw + ABS_TOL,
+                    f"session {key} slots {s0}->{s1}: |{p1} - {p0}| kW exceeds {limit_kw} kW",
+                )
 
     # Independent trajectory re-simulation for EVERY built-in policy.
     if policy in ("idle", "uncontrolled", "policy-0", "policy-1", "policy-2", "edf", "llf"):

@@ -108,8 +108,28 @@ cargo run --release --features solver-highs --bin negotiate -- --scenario <dir> 
 python3 tools/convert_optimus.py <optimus_episode> <out> # reference-format episode -> scenario
 python3 tools/referee.py <scenario> <out>                # independent verification of a run
 python3 tools/run_verification.py                        # full campaign: referee + determinism
+python3 tools/parity_optimus.py --test-episodes <ep> [<ep> ...] \
+    --train-episodes <ep> ... --policies llf,oracle,mpc,scenario-mpc \
+    [--reference-results <dir>]                          # cross-simulator parity harness
 python3 tools/md2html.py reports/<file>.md               # report HTML
 ```
+
+`parity_optimus.py` reruns the whole `reports/BENCHMARK.md` comparison with one command:
+it converts reference-format episode directories, runs the requested policies over them (the
+training episodes become `scenario-mpc`'s `--futures` pool), and prints bills, peaks, and
+wall-clock runtimes. Given `--reference-results <dir>` (a tree of runs in the reference
+simulator's own `summary_bldg_0.json` + `metrics.json` layout) it adds a per-episode delta
+table with attribution columns: `F-A` (the final billing interval the reference never charges
+for, computed exactly from the openv2b run) and `res = delta - F-A`, which is where F-G and
+solver vertex choice live. The reference tree is optional: without it, or when no episode
+matches, the harness says so and prints the openv2b table alone. It is deliberately not part
+of CI, since it depends on data that is not in this repository.
+
+`referee.py` also honors one opt-in manifest field, `planner_ramp_kwh_per_slot`: declare it
+only for a run whose applied trajectory came from a single ramp-limited plan. A receding
+controller re-plans every slot and its committed slots are tied only *within* one plan
+(measured: 15 kW slot-to-slot swings from `scenario-mpc` under a 1.25 kWh/slot ramp), and the
+heuristics have no ramp at all.
 
 ## Design
 

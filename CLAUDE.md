@@ -24,6 +24,8 @@ cargo run --release --bin gen_month          # regenerate examples/one_month*
 cargo run --release -- --scenario examples/one_day --policy llf --out /tmp/out
 python3 tools/referee.py examples/one_day /tmp/out        # independent verification
 python3 tools/run_verification.py            # full campaign: 18+ runs, referee + determinism
+python3 tools/parity_optimus.py --test-episodes <ep> --train-episodes <ep> \
+    --policies llf,oracle,mpc,scenario-mpc [--reference-results <dir>]  # BENCHMARK.md rerun
 python3 tools/md2html.py reports/OVERNIGHT_REPORT.md      # report HTML (never hand-edit .html)
 ```
 
@@ -54,7 +56,11 @@ python3 tools/md2html.py reports/OVERNIGHT_REPORT.md      # report HTML (never h
   re-simulates every heuristic policy from scratch and must agree with the engine slot-exactly.
   When you change policy/engine semantics you MUST mirror the change here, in the referee's own
   words, and the campaign must stay green. That duplication is deliberate: it is the
-  differential oracle.
+  differential oracle. Its POLICY-AGNOSTIC checks (they cover oracle/mpc/scenario-mpc, which
+  are not re-simulated) are: per-DR-event settlement against the peak inside that window,
+  per-session reconciliation of metered energies + occupancy window + SoC recursion against
+  that session's OWN trace rows, and an OPT-IN ramp bound gated on the manifest field
+  `planner_ramp_kwh_per_slot` (see hard rule 8).
 
 ## Hard rules (each one exists because a review found the violation)
 
@@ -74,6 +80,12 @@ python3 tools/md2html.py reports/OVERNIGHT_REPORT.md      # report HTML (never h
 5. New behavior flags default to legacy/off and must leave existing outputs byte-identical.
 6. Never commit outputs from proprietary simulators as fixtures; synthetic or hand-computed only.
 7. `reports/*.html` are generated (tools/md2html.py); edit only the .md sources.
+8. A RECEDING controller's realized trajectory is NOT ramp-bounded, however hard its LP ramps.
+   Consecutive committed slots come from two different solves and are tied only *within* each
+   plan: measured on `scenario-mpc`, 15 kW slot-to-slot swings under a 1.25 kWh/slot (= 5 kW)
+   ramp. So the referee's ramp check is opt-in via `planner_ramp_kwh_per_slot`, and that field
+   belongs only to a run replayed from ONE ramp-limited plan. Never set it for a receding
+   policy or a heuristic (which has no ramp at all).
 
 ## Current state (update me)
 
@@ -81,7 +93,7 @@ v0.4-alpha, 2026-07-31. THE OPTIMUS REPLICATION MILESTONE IS COMPLETE: heuristic
 ports (docs/OPTIMUS_PORT.md is the fidelity contract + divergence ledger F-A..F-G with
 rulings and dollar impacts); LLF/oracle/MPC bill parity on converted RISHAV_WEEK eps 1-3 is
 attributed to the cent (reports/BENCHMARK.md); scenario-MPC (K=5, const-7 chained futures)
-matches the reference within ~$1.5 on 2 of 3 episodes at ~6x speed. 69 tests green under
+matches the reference within ~$1.5 on 2 of 3 episodes at ~6x speed. 73 tests green under
 --features solver-highs, clippy/fmt clean both feature sets, referee re-simulates all seven
 policies slot-exactly, 21-run month campaign green. Binaries: openv2b (policies incl.
 oracle/mpc/scenario-mpc with --futures, CPLEX variants via OPENV2B_CPLEX_BIN), gen_month,
@@ -178,3 +190,11 @@ open items: X5 billing parity, queueing scenarios refused by the bridge.
   chained futures; full benchmark in reports/BENCHMARK.md. OPTIMUS bench configs audited
   (deg/battery_deg_cost dead-config split, mpc_horizon_sec not ini-settable, threshold parquet
   value 117.14761373157317 for SEP2024).
+- 2026-07-31 (test coverage): referee gained policy-agnostic checks that also bind on the
+  optimizing policies (per-DR-event settlement vs the in-window peak, per-session trace
+  reconciliation incl. occupancy window and SoC recursion, opt-in ramp bound); new
+  `tests/scenario_mpc.rs` (4 tests: non-anticipativity, const-7 chained banking,
+  `building_from_futures`, K=3 determinism), the first mutation-verified by deleting the
+  na_cp/na_cn block; `tools/parity_optimus.py` reruns the BENCHMARK.md comparison in one
+  command and degrades gracefully with no reference data (not in CI). Finding recorded as
+  hard rule 8: receding controllers escape their own ramp constraint.

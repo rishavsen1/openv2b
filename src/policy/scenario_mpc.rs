@@ -158,8 +158,12 @@ impl Policy for ScenarioMpc {
             // Scenario k's sampled future arrivals.
             if let Some(future) = self.config.futures.get(k) {
                 for v in &future.vehicles {
-                    if v.arrival_slot > now && v.arrival_slot < horizon_end {
-                        let last = (v.departure_slot - 1).min(horizon_end - 1);
+                    // Reference filter: arrival strictly after now AND
+                    // departure strictly inside the horizon. Sessions that
+                    // would be truncated by the horizon are DROPPED, not
+                    // clipped (utils.py splice_state).
+                    if v.arrival_slot > now && v.departure_slot < horizon_end {
+                        let last = v.departure_slot - 1;
                         if last < v.arrival_slot {
                             continue;
                         }
@@ -295,8 +299,9 @@ impl Policy for ScenarioMpc {
             );
             for s in now..horizon_end {
                 // Reference: scenario k prices its own episode's load; the
-                // CURRENT slot always uses the realized value (it is
-                // observed, not forecast).
+                // CURRENT slot uses the realized value (measured, not
+                // forecast; sampling it too was tested and diverges further
+                // from the reference's committed dispatch).
                 let building = if self.config.building_from_futures && s > now {
                     self.config
                         .futures
