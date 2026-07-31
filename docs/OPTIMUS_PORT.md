@@ -77,6 +77,18 @@ hardcoded 0.05 $/kWh (`battery_deg_cost = 0.01` in its ini is stored but never r
 (`mpc_horizon_sec` is not ini-settable) with a full re-solve every 15 minutes while sessions
 are live.
 
+## Scenario-MPC parity (reports/BENCHMARK.md has the full tables)
+
+`policy::scenario_mpc` matches the reference ILP-MPC structurally: K unnormalized SAA
+scenarios sourced from historical episodes, non-anticipativity on the committed first slot,
+the midnight-sawtooth 1-2 day horizon, ramp, deg 0.05, live 1e6 shortfall, and the `p_max`
+realized-history ratchet. The load-bearing detail is const-7 SCENARIO CHAINING: sampled future
+sessions of tracked identities continue the connected car's battery (terminal-energy variable
+minus depletion). Without it the sampled futures inflate the planned peak into a free plateau
+and bills blow up by $98-375/week; with it, two of three test episodes land within ~$1.5 of
+the reference (the third differs by one 2 kW peak slot, scenario-noise class). Matched-config
+runtime: ~6x faster (in-process HiGHS vs per-solve CPLEX CLI + Python model rebuild).
+
 ## Process rule (why this document exists)
 
 An earlier openv2b version shipped different algorithms under the `edf`/`llf` names; the ~5%

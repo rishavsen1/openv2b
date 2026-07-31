@@ -12,12 +12,15 @@ struct Args {
     scenario: PathBuf,
     policy: String,
     out: Option<PathBuf>,
+    /// Comma-separated converted-episode dirs providing scenario-MPC futures.
+    futures: Vec<PathBuf>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut scenario = None;
     let mut policy = None;
     let mut out = None;
+    let mut futures: Vec<PathBuf> = Vec::new();
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
         match arg.as_str() {
@@ -28,6 +31,14 @@ fn parse_args() -> Result<Args, String> {
             }
             "--policy" => policy = Some(argv.next().ok_or("--policy needs a value")?),
             "--out" => out = Some(PathBuf::from(argv.next().ok_or("--out needs a value")?)),
+            "--futures" => {
+                futures = argv
+                    .next()
+                    .ok_or("--futures needs a comma-separated list of dirs")?
+                    .split(',')
+                    .map(PathBuf::from)
+                    .collect()
+            }
             "--help" | "-h" => return Err(usage()),
             other => return Err(format!("unknown argument '{other}'\n{}", usage())),
         }
@@ -36,6 +47,7 @@ fn parse_args() -> Result<Args, String> {
         scenario: scenario.ok_or_else(|| format!("--scenario is required\n{}", usage()))?,
         policy: policy.ok_or_else(|| format!("--policy is required\n{}", usage()))?,
         out,
+        futures,
     })
 }
 
@@ -114,6 +126,39 @@ fn main() -> ExitCode {
         "oracle" => {
             eprintln!("policy 'oracle' requires building with --features solver-highs");
             return ExitCode::FAILURE;
+        }
+        name @ ("scenario-mpc" | "scenario-mpc-cplex") => {
+            if args.futures.is_empty() {
+                eprintln!("{name} requires --futures <dir,dir,...> (converted episodes)");
+                return ExitCode::FAILURE;
+            }
+            let mut futures = Vec::new();
+            for dir in &args.futures {
+                match Scenario::load(dir) {
+                    Ok(f) => futures.push(f),
+                    Err(e) => {
+                        eprintln!("failed to load future {}: {e}", dir.display());
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+            let cfg = policy::scenario_mpc::ScenarioMpcConfig::new(futures);
+            let backend: Box<dyn openv2b::milp::MilpBackend> = if name.ends_with("cplex") {
+                cplex_backend()
+            } else {
+                #[cfg(feature = "solver-highs")]
+                {
+                    Box::new(openv2b::milp::highs_backend::HighsBackend)
+                }
+                #[cfg(not(feature = "solver-highs"))]
+                {
+                    eprintln!(
+                        "scenario-mpc requires --features solver-highs (or use scenario-mpc-cplex)"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            };
+            Box::new(policy::scenario_mpc::ScenarioMpc::new(backend, cfg))
         }
         "oracle-cplex" => match oracle_policy(cplex_backend().as_ref()) {
             Some(p) => p,

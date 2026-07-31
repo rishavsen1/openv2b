@@ -77,25 +77,34 @@ python3 tools/md2html.py reports/OVERNIGHT_REPORT.md      # report HTML (never h
 
 ## Current state (update me)
 
-v0.3-alpha, 2026-07-30 (second session). 72 tests green under `--features solver-highs` (54
-solver-free), clippy/fmt clean both feature sets, CI includes the referee. Month campaign: 19
-runs (incl. MPC) all referee-verified + deterministic. MPC solves a 2880-slot month in ~1.7 s
-(HiGHS in-process); LP-CLI backend verified bill-identical vs CPLEX 22.1
-(/home/rishav/ibm/cplex). Landed since the overnight report: full-horizon oracle
-(`policy::oracle`, persistence-coupled, replayable), MPC-vs-oracle parity suites for BOTH
-regimes + the upward-peak drift canary (`tests/parity.rs`), FSL commitment optimization with
-honored-gate post-adjustment (`plan_fsl` binary, `tests/fsl.rs`), negotiation layer v1
-(`src/negotiation.rs`, `negotiate` binary, `tests/negotiation.rs`). Known gaps: Gurobi backend
-(needs license), tariff ratchets/minimum-demand clauses, multi-building, ACN-Data importer,
-in-loop (non-pre-pass) negotiation.
+v0.4-alpha, 2026-07-31. THE OPTIMUS REPLICATION MILESTONE IS COMPLETE: heuristics are faithful
+ports (docs/OPTIMUS_PORT.md is the fidelity contract + divergence ledger F-A..F-G with
+rulings and dollar impacts); LLF/oracle/MPC bill parity on converted RISHAV_WEEK eps 1-3 is
+attributed to the cent (reports/BENCHMARK.md); scenario-MPC (K=5, const-7 chained futures)
+matches the reference within ~$1.5 on 2 of 3 episodes at ~6x speed. 69 tests green under
+--features solver-highs, clippy/fmt clean both feature sets, referee re-simulates all seven
+policies slot-exactly, 21-run month campaign green. Binaries: openv2b (policies incl.
+oracle/mpc/scenario-mpc with --futures, CPLEX variants via OPENV2B_CPLEX_BIN), gen_month,
+plan_fsl, negotiate. Known gaps: Gurobi backend (license), tariff ratchets, multi-building,
+ACN-Data importer, negotiation v2, ep2 scenario-MPC +$25 (scenario-index noise, documented).
 
 ## Active work (update me)
 
-- Negotiation v2 candidates: in-loop arrival hook (replace the pre-pass), settlement ledger
-  outputs, menu pricing that sees concurrent EV load.
-- ACN-Sim plugin follow-ups (in `~/acnportal-v2b`, separate repo, unpushed): X5 billing
-  parity needs its `SeriesTariff` + `v2b_analysis` components; scenarios with queueing
-  (`never_connected`) are refused by its bridge by design.
+- Nothing in flight. Next candidates: publish acnportal-v2b (needs a GitHub repo from Rishav)
+  + its X5 billing parity; config-file surface ([policy] section) so scenario-mpc futures and
+  thresholds are input-reproducible; multi-building; scenario-MPC seed-permutation match for
+  the ep2 residual.
+
+## Scenario-MPC semantics (src/policy/scenario_mpc.rs)
+
+Matched to the reference ILP-MPC: K unnormalized scenarios (episodes source), sawtooth horizon
+(end of NEXT day), non-anticipativity ties connected sessions' first-slot rates to scenario 0
+(paired by view index, NOT position: futures interleave in the per-scenario sort), p_max_hist
+ratchet updated only on peak-TOU committed slots, ramp 1.25 kWh/slot, deg 0.05, shortfall 1e6
+via the reachability terminal. CRITICAL: sampled future sessions of tracked identities are
+CHAINED to the connected session's terminal energy (const-7); breaking that chain inflates
+planned peaks catastrophically (measured $98-375/week). CLI: --policy scenario-mpc --futures
+dir1,dir2,... (converted episodes; training pool must be disjoint from the test episode).
 
 ## Clarified gaps vs OPTIMUS (2026-07-30 review with Rishav)
 
@@ -160,3 +169,12 @@ open items: X5 billing parity, queueing scenarios refused by the bridge.
 - 2026-07-30 (session 2): published to github.com/rishavsen1/openv2b; oracle + parity suites +
   drift canary; FSL commitment planner; negotiation layer v1; ACN-Sim plugin started in its
   own repo.
+- 2026-07-30/31 (reconciliation): Rishav flagged silently-substituted policy logic (memory:
+  faithful-replication lesson). Line-anchored port spec extracted from OPTIMUS; oracle gap
+  decomposed to the cent (deg 0.05 hardcoded there, final-slot billing fencepost F-A, ramp);
+  faithful ports REPLACED the simplified policies (V2B overlay deleted); reference assignment
+  semantics; max_soc ceiling split from capacity; referee mirrors the ports; new reference
+  defect found (F-G: over-limit discharge, 8.22 kWh/wk); scenario-MPC built with const-7
+  chained futures; full benchmark in reports/BENCHMARK.md. OPTIMUS bench configs audited
+  (deg/battery_deg_cost dead-config split, mpc_horizon_sec not ini-settable, threshold parquet
+  value 117.14761373157317 for SEP2024).

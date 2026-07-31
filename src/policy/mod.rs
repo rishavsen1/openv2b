@@ -3,6 +3,7 @@
 mod heuristics;
 pub mod mpc;
 pub mod oracle;
+pub mod scenario_mpc;
 
 pub use heuristics::{Idle, Policy0, Policy1, Policy2, ThresholdScheduler, Uncontrolled};
 

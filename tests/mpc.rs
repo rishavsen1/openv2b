@@ -137,6 +137,41 @@ mod with_highs {
         }
     }
 
+    /// Scenario-MPC smoke: with one sampled future chaining the connected
+    /// car's identity, the controller runs deterministically, meets the live
+    /// target, and stays physical.
+    #[test]
+    fn scenario_mpc_runs_and_meets_targets() {
+        use openv2b::policy::scenario_mpc::{ScenarioMpc, ScenarioMpcConfig};
+        let mut v = vehicle(3, 0, 24);
+        v.soc_arrival_kwh = 20.0;
+        v.soc_target_kwh = 40.0;
+        let s = base_scenario(96, vec![v], vec![charger(0, true)]);
+        // A future episode where the same identity returns later that day.
+        let mut fv = vehicle(3, 40, 80);
+        fv.soc_arrival_kwh = 30.0;
+        fv.soc_target_kwh = 45.0;
+        fv.depletion_kwh = 6.0;
+        let future = base_scenario(96, vec![fv], vec![charger(0, true)]);
+        let mk = || {
+            ScenarioMpc::new(
+                Box::new(HighsBackend),
+                ScenarioMpcConfig::new(vec![future.clone()]),
+            )
+        };
+        let a = run(&s, &mk());
+        let b = run(&s, &mk());
+        assert!(a.sessions[0].target_met, "live target must be met");
+        for rec in &a.slots {
+            assert!(rec.net_kw >= -1e-9, "no export");
+        }
+        assert_eq!(
+            serde_json::to_string(&a.sessions).expect("serialize"),
+            serde_json::to_string(&b.sessions).expect("serialize"),
+            "scenario-mpc must be deterministic"
+        );
+    }
+
     /// Cross-backend parity: HiGHS in-process vs CPLEX CLI on the same
     /// fixture must agree on the realized bill. Needs a local CPLEX binary.
     #[test]
