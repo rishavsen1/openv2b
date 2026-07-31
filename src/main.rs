@@ -142,7 +142,10 @@ fn main() -> ExitCode {
                     }
                 }
             }
-            let cfg = policy::scenario_mpc::ScenarioMpcConfig::new(futures);
+            let mut cfg = policy::scenario_mpc::ScenarioMpcConfig::new(futures);
+            // Reference behavior: chained sampled sessions take their
+            // between-visit consumption from the test episode.
+            cfg.test_sessions = scenario.vehicles.clone();
             let backend: Box<dyn openv2b::milp::MilpBackend> = if name.ends_with("cplex") {
                 cplex_backend()
             } else {

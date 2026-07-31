@@ -100,6 +100,50 @@ identities. Difference noted but benign on this data: the reference passes every
 LAST training episode's price/charger tables (a leaked loop variable), harmless because all
 RISHAV SEP2024 episodes share tariffs.
 
+## Input-level diff at a single solve (the decisive experiment)
+
+Inferring from bills was replaced by instrumenting the reference: its MPC was made to dump
+every LP input at ONE decision point (ep1, slot 120, both simulators ramp-free, reference
+scenario order) and openv2b's inputs were diffed against it field by field.
+
+Committed-dispatch agreement at that configuration: **498 of 768 slots agree to 1e-6**, the
+first two decisions match exactly (both saturated at 20 kW), and the first divergence is the
+first INTERIOR action, slot 120: reference -11.896 kW vs openv2b -11.549 kW.
+
+Input diff results at that solve:
+
+| input | result |
+|---|---|
+| Building-load vectors, all 5 scenarios + the live value | **identical to 4 decimals** |
+| Horizon (absolute slots 120..288, 169 local slots) | identical |
+| Prices / TOU classes / peak-demand slot set (128 of 169) | identical (shared across scenarios in both) |
+| Session table (arrival, last slot, SoC anchor, target) for scenario 0 | **0 mismatched fields** |
+| Connected car's anchor = live measured SoC (52.6 kWh) | identical |
+| Test-episode FUTURE sessions leaking into any scenario | **zero, in both** |
+| Objective coefficients; absence of any 1/K weighting | identical |
+| `p_max_hist` at this solve | 0.0 in both (inert) |
+| Session COUNT per scenario | was 25 vs 24: **found a real defect** |
+| Chained sessions' between-visit consumption | was the sampled episode's: **found a real defect** |
+
+Two genuine defects were found and fixed:
+
+1. **Phantom duplicate session.** A sampled episode's record of a car's CURRENT visit was being
+   added as a future arrival while that same car was already connected, so the plan carried two
+   copies of one vehicle. The reference drops it (composite-id collision, live copy wins).
+   Fixing it moved slot 120 from -11.549 to -11.681 kW, closing 38% of the gap, and made the
+   per-scenario session count match exactly (24).
+2. **Chained consumption sourced from the wrong episode.** For a sampled future session of a
+   tracked identity, the reference takes `depletion` from the TEST episode, not from the
+   sampled one: verified 10/10 on scenario 0's chained sessions (e.g. composite 301 = 6.714 kWh
+   = the test value; the sampled episode says 11.202). openv2b now mirrors this. Worth naming
+   plainly: this is an information leak in the reference, since the planner learns how far each
+   car will actually be driven before its next visit; it is reproduced for comparability and
+   can be disabled by leaving `ScenarioMpcConfig::test_sessions` empty.
+
+Fix 2 is verified against the reference's own data yet moves the slot-120 output further away
+(-11.404). That is not a contradiction: correctness of an input is judged against the dump, not
+against output convergence, and a remaining wrong input can dominate. It stays.
+
 ## What the residual actually is
 
 After (i)-(iii), ep1 agrees to **$1.57** (and to **$0.88** in the ramp-free configuration,

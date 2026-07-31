@@ -51,6 +51,17 @@ pub struct ScenarioMpcConfig {
     /// building-load series (the load is forecast, not known). False plans
     /// every scenario against the realized series (perfect foresight).
     pub building_from_futures: bool,
+    /// The test episode's session rows, used ONLY to source the
+    /// between-visit consumption (`depletion_kwh`) of sampled future
+    /// sessions belonging to tracked identities, matched by (identity,
+    /// session index). This mirrors the reference, which merges its
+    /// external-use column from the TEST episode.
+    ///
+    /// NOTE: this is a real information leak in the reference: the planner
+    /// learns how far each car will actually be driven before its next
+    /// visit. Leave empty to keep the honest behavior (use the sampled
+    /// episode's own consumption).
+    pub test_sessions: Vec<crate::scenario::Vehicle>,
 }
 
 impl ScenarioMpcConfig {
@@ -63,6 +74,7 @@ impl ScenarioMpcConfig {
             slots_per_day: 96,
             use_peak_history: true,
             building_from_futures: true,
+            test_sessions: Vec::new(),
         }
     }
 }
@@ -124,6 +136,22 @@ impl Policy for ScenarioMpc {
         let mut scen_sessions: Vec<Vec<Sess>> = Vec::with_capacity(n_scen);
         let deg = self.config.degradation_usd_per_kwh;
 
+        // (identity, session index) -> the TEST episode's between-visit
+        // consumption; see `test_sessions`.
+        let mut test_depletion: std::collections::HashMap<(u32, usize), f64> =
+            std::collections::HashMap::new();
+        if !self.config.test_sessions.is_empty() {
+            let mut rows: Vec<&crate::scenario::Vehicle> =
+                self.config.test_sessions.iter().collect();
+            rows.sort_by_key(|v| (v.vehicle_id, v.arrival_slot));
+            let mut seq: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+            for v in rows {
+                let idx = seq.entry(v.vehicle_id).or_insert(0);
+                test_depletion.insert((v.vehicle_id, *idx), v.depletion_kwh);
+                *idx += 1;
+            }
+        }
+
         for k in 0..n_scen {
             let mut sessions: Vec<Sess> = Vec::new();
             // Connected sessions: identical request data in every scenario.
@@ -157,14 +185,39 @@ impl Policy for ScenarioMpc {
             }
             // Scenario k's sampled future arrivals.
             if let Some(future) = self.config.futures.get(k) {
-                for v in &future.vehicles {
+                // Session index within the sampled episode, per identity
+                // (the reference's composite id = car x 100 + session).
+                let mut seq: std::collections::HashMap<u32, usize> =
+                    std::collections::HashMap::new();
+                let mut ordered: Vec<&crate::scenario::Vehicle> = future.vehicles.iter().collect();
+                ordered.sort_by_key(|v| (v.vehicle_id, v.arrival_slot));
+                for v in ordered {
+                    let session_index = {
+                        let e = seq.entry(v.vehicle_id).or_insert(0);
+                        let i = *e;
+                        *e += 1;
+                        i
+                    };
                     // Reference filter: arrival strictly after now AND
                     // departure strictly inside the horizon. Sessions that
                     // would be truncated by the horizon are DROPPED, not
-                    // clipped (utils.py splice_state).
+                    // clipped (the reference's splice_state).
                     if v.arrival_slot > now && v.departure_slot < horizon_end {
                         let last = v.departure_slot - 1;
                         if last < v.arrival_slot {
+                            continue;
+                        }
+                        // Deduplicate against the live state: a sampled
+                        // session that overlaps a CURRENTLY CONNECTED session
+                        // of the same identity is that car's present visit as
+                        // the historical episode saw it, not a future one.
+                        // The reference drops it (composite-id collision) and
+                        // the live copy wins; keeping it would plan a phantom
+                        // second copy of a car that is already plugged in.
+                        if obs.sessions.iter().any(|view| {
+                            view.vehicle.vehicle_id == v.vehicle_id
+                                && v.arrival_slot < view.vehicle.departure_slot
+                        }) {
                             continue;
                         }
                         sessions.push(Sess {
@@ -186,7 +239,9 @@ impl Policy for ScenarioMpc {
                             max_charge_kw: v.max_charge_kw,
                             max_discharge_kw: v.max_discharge_kw,
                             vehicle_id: v.vehicle_id,
-                            depletion_kwh: v.depletion_kwh,
+                            depletion_kwh: *test_depletion
+                                .get(&(v.vehicle_id, session_index))
+                                .unwrap_or(&v.depletion_kwh),
                             cp: vec![],
                             cn: vec![],
                             last_e: None,
