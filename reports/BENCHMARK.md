@@ -53,8 +53,25 @@ dataset the deterministic openv2b MPC ($3796.08/$3754.95/$3762.01) matches OPTIM
 MPC about as well as our scenario version does; arrival uncertainty is worth roughly nothing
 here, so scenario count is a runtime cost without a bill benefit on RISHAV_WEEK.
 
-Open residual: ep2's +$25.16 is a single 2 kW difference in the realized weekly peak,
-consistent with scenario-indexing/tie-break noise between the two stochastic controllers
-(OPTIMUS permutes its 5 episodes with numpy seed 42 and commits its scenario-0; which episode
-is "scenario 0" differs). Chasing it further means matching their seed-permutation order;
-recorded as a known, bounded difference rather than hidden in a tolerance.
+## Matched-scenario-order experiment (uncertainty elimination)
+
+To eliminate scenario-set differences entirely, openv2b was re-run with OPTIMUS's exact
+seed-42 episode permutation (51, 54, 52, 50, 53) plus two control orderings:
+
+| ep | order A (50..54) | order B (OPTIMUS's) | order C (53,50,52,54,51) | OPTIMUS |
+|---|---|---|---|---|
+| 1 | 3796.95 | 3796.95 | - | 3795.36 |
+| 2 | 3798.55 | 3797.79 | 3795.91 | 3773.39 |
+| 3 | 3763.33 | 3822.65 | 3763.33 | 3761.93 |
+
+Two conclusions. First, with non-anticipativity tying every scenario's first-slot rates,
+ordering can influence results only through DEGENERATE-OPTIMUM selection inside the solver;
+ep3's $59 spread across orderings measures that band, and the reference's own results carry
+the same class of arbitrariness (its LP vertex choice is equally unpinned). At favorable
+vertices ep1/ep3 sit within ~$1.5 of the reference: the billing-fencepost level. Second, ep2
+retains a small SYSTEMATIC difference robust to ordering: the reference shaves its weekly peak
+to 138.0 kW where openv2b reaches ~139.8-140.0 (~2 kW, ~$23, 0.6% of the bill), plausibly a
+by-product of the reference controller's much heavier planned churn (880/600 kWh cycled per
+week vs our far lower). Pinning it further would require imposing a shared tie-breaking rule
+on both solvers, which the reference itself does not have; recorded as a known, bounded
+difference rather than hidden in a tolerance.

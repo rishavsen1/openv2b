@@ -61,13 +61,55 @@ every heuristic policy from scratch and must agree slot-exactly; it runs in CI. 
 ## Quick start
 
 ```bash
-cargo build --release
-cargo test
-cargo run --release -- --scenario examples/one_day/scenario.json --policy edf --out results/
+cargo build --release --features solver-highs   # solver-free build: drop the feature
+cargo test --features solver-highs
+./target/release/openv2b --scenario examples/one_day --policy llf --out results/
 ```
 
 A scenario is a directory of CSV files (vehicles, chargers, building load, grid prices, DR events)
 described by a small JSON manifest. See `examples/one_day/` and `docs/INPUT_FORMAT.md`.
+
+## Running each policy
+
+`openv2b --scenario <dir> --policy <name> [--out <dir>] [--futures <dir,dir,...>]`
+
+| policy | what it is | needs |
+|---|---|---|
+| `idle` | building-only baseline (no EV action); use for EV-vs-building cost attribution | - |
+| `uncontrolled` | charge every car toward its target at max feasible power | - |
+| `policy-0` | reference JIT: minimum constant rate that reaches the target by departure | - |
+| `policy-1` | reference TOU: charge to ceiling off-peak/super-off-peak, discharge above-target cars at peak | bidirectional chargers for the discharge leg |
+| `policy-2` | reference: charge to ceiling at off-peak ONLY (super-off-peak idles) | - |
+| `edf` / `llf` | reference threshold-budget schedulers (deadline-pressure / time-left priority, force-charge, ratchet); DR-blind by design | optional `heuristic_threshold_kw` in scenario.json (default: 0.8 x max building load) |
+| `oracle` | full-horizon solve-once plan (perfect foresight, persistence-coupled), replayed | `--features solver-highs` |
+| `oracle-cplex` | same, solved through the CPLEX CLI | local CPLEX; `OPENV2B_CPLEX_BIN=/path/to/cplex` (defaults to a known local path) |
+| `mpc` | deterministic receding-horizon LP (connected sessions only, no sampled futures) | `--features solver-highs` |
+| `mpc-cplex` | same via the CPLEX CLI | CPLEX, `OPENV2B_CPLEX_BIN` |
+| `scenario-mpc` | K-future SAA MPC (reference-matched: unnormalized scenarios, sawtooth horizon, ramp, peak-history ratchet, const-7 chained futures) | `--features solver-highs`; `--futures dir1,dir2,...` = converted historical episodes, disjoint from the test episode |
+| `scenario-mpc-cplex` | same via the CPLEX CLI | CPLEX, `OPENV2B_CPLEX_BIN`, `--futures` |
+
+Scenario-level knobs (scenario.json; full schema in `docs/INPUT_FORMAT.md`): `slot_minutes`,
+`horizon_slots`, `charge_efficiency`/`discharge_efficiency`, `site_cap_kw` (engine-enforced),
+`demand_charge_usd_per_kw` (facilities, all-slot peak), `demand_charge_peak_usd_per_kw`
+(peak-TOU peak), `persistence` (cross-day SoC chaining on/off), `heuristic_threshold_kw`
+(EDF/LLF budget seed), `dr_events_file` (omit for no demand response). Algorithm constants
+(MPC lookahead, shortfall penalty, degradation cost, ramp, negotiation tiers/shares/seed) are
+Rust config structs with reference-matched defaults (`MpcConfig`, `OracleConfig`,
+`ScenarioMpcConfig`, `NegotiationConfig`); a config-file surface for them is on the roadmap.
+
+## Tools
+
+```bash
+cargo run --release --bin gen_month                      # regenerate examples/one_month*
+cargo run --release --features solver-highs --bin plan_fsl -- --scenario <dir>
+                                                         # optimize DR firm-level commitments
+cargo run --release --features solver-highs --bin negotiate -- --scenario <dir> [--seed N]
+                                                         # arrival-time contract menus
+python3 tools/convert_optimus.py <optimus_episode> <out> # reference-format episode -> scenario
+python3 tools/referee.py <scenario> <out>                # independent verification of a run
+python3 tools/run_verification.py                        # full campaign: referee + determinism
+python3 tools/md2html.py reports/<file>.md               # report HTML
+```
 
 ## Design
 
